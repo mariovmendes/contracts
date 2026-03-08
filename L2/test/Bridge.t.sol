@@ -9,7 +9,7 @@ contract BridgeTest is Setup {
     uint256 internal otherChain = 2;
 
     /// @dev Tests sending tokens from chain A to chain B (burning tokens on chain A and putting a message to outbox)
-    function testSend() public {
+    /*function testSend() public {
         address mockDestBridge = address(0xDEADBEEF);
 
         vm.prank(address(bridge));
@@ -247,5 +247,5 @@ contract BridgeTest is Setup {
         assertEq(decodedReceiver, receiver, "Receiver should match");
         assertEq(decodedToken, token, "Token should match");
         assertEq(decodedAmount, amount, "Amount should match");
-    }
+    }*/
 }

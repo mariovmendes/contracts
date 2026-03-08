@@ -157,11 +157,75 @@ contract Mailbox is IMailbox {
         if (outboxRootPerChain[chainMessageRecipient] == bytes32(0)) {
             chainIDsOutbox.push(chainMessageRecipient);
         }
-        outboxRootPerChain[chainMessageRecipient] = keccak256(
-            abi.encode(outboxRootPerChain[chainMessageRecipient], key, data)
+        outboxRootPerChain[chainMessageRecipient] ^= keccak256(
+            abi.encode(key, data)
         );
 
         emit NewOutboxKey(messageHeaderListOutbox.length - 1, key);
+    }
+
+    /// @notice Removes a previously written message from the outbox.
+    /// @dev Any contract can remove from the outbox.
+    /// @param chainMessageRecipient The ID of the chain receiving the message.
+    /// @param receiver The address that will receive the message.
+    /// @param sessionId The session number.
+    /// @param label The tag for the action.
+    /// @param data The message data to send.
+    function unwrite(
+        uint256 chainMessageRecipient,
+        address receiver,
+        uint256 sessionId,
+        bytes calldata label,
+        bytes calldata data
+    ) external {
+        bytes32 key = getKey(
+            block.chainid,
+            chainMessageRecipient,
+            msg.sender,
+            receiver,
+            sessionId,
+            label
+        );
+
+        if (outbox[key].length == 0 && !createdKeys[key]) {
+            revert MessageNotFound();
+        }
+
+        delete outbox[key];
+        createdKeys[key] = false;
+
+        // TODO: Does not maintain order, check if this is an issue!
+        for(uint i = 0; i < messageHeaderListOutbox.length; i++) {
+            if(_headerEquals(messageHeaderListOutbox[i],
+                block.chainid,
+                chainMessageRecipient,
+                msg.sender,
+                receiver,
+                sessionId,
+                label
+            )) {
+                messageHeaderListOutbox[i] = messageHeaderListOutbox[messageHeaderListOutbox.length - 1];
+                messageHeaderListOutbox.pop();
+                break;
+            }
+        }
+
+        outboxRootPerChain[chainMessageRecipient] ^= keccak256(
+            abi.encode(key, data)
+        );
+
+        // TODO: Does not maintain order, check if this is an issue!
+        if (outboxRootPerChain[chainMessageRecipient] == bytes32(0)) {
+            for(uint i = 0; i < chainIDsOutbox.length; i++) {
+                if(chainIDsOutbox[i] == chainMessageRecipient) {
+                    chainIDsOutbox[i] = chainIDsOutbox[chainIDsOutbox.length - 1];
+                    chainIDsOutbox.pop();
+                    break;
+                }
+            }
+        }
+
+        emit DeletedOutboxMessage( key);
     }
 
     /// @notice Adds a message to the inbox. Only the coordinator can do this.
@@ -197,11 +261,90 @@ contract Mailbox is IMailbox {
         if (inboxRootPerChain[chainMessageSender] == bytes32(0)) {
             chainIDsInbox.push(chainMessageSender);
         }
-        inboxRootPerChain[chainMessageSender] = keccak256(
-            abi.encode(inboxRootPerChain[chainMessageSender], key, data)
+
+        inboxRootPerChain[chainMessageSender] ^= keccak256(
+            abi.encode(key, data)
         );
 
         emit NewInboxKey(messageHeaderListInbox.length - 1, key);
+    }
+
+    function removeInbox(
+        uint256 chainMessageSender,
+        address sender,
+        address receiver,
+        uint256 sessionId,
+        bytes calldata label,
+        bytes calldata data
+    ) external onlyCoordinator{
+        bytes32 key = getKey(
+            chainMessageSender,
+            block.chainid,
+            sender,
+            receiver,
+            sessionId,
+            label
+        );
+
+        if (inbox[key].length == 0 && !createdKeys[key]) {
+            revert MessageNotFound();
+        }
+
+        delete inbox[key];
+        createdKeys[key] = false;
+
+        // TODO: Does not maintain order, check if this is an issue!
+        for(uint i = 0; i < messageHeaderListInbox.length; i++) {
+            if(_headerEquals(messageHeaderListInbox[i],
+                chainMessageSender,
+                block.chainid,
+                sender,
+                receiver,
+                sessionId,
+                label
+            )) {
+                messageHeaderListInbox[i] = messageHeaderListInbox[messageHeaderListInbox.length - 1];
+                messageHeaderListInbox.pop();
+                break;
+            }
+        }
+
+        inboxRootPerChain[chainMessageSender] ^= keccak256(
+            abi.encode(key, data)
+        );
+
+        // TODO: Does not maintain order, check if this is an issue!
+        if (inboxRootPerChain[chainMessageSender] == bytes32(0)) {
+            for(uint i = 0; i < chainIDsInbox.length; i++) {
+                if(chainIDsInbox[i] == chainMessageSender) {
+                    chainIDsInbox[i] = chainIDsInbox[chainIDsInbox.length - 1];
+                    chainIDsInbox.pop();
+                    break;
+                }
+            }
+        }
+
+        emit DeletedInboxMessage(key);
+    }
+
+    /// @dev Helper to compare a storage MessageHeader with provided fields.
+    function _headerEquals(
+        MessageHeader storage h,
+        uint256 chainSrc,
+        uint256 chainDest,
+        address sender,
+        address receiver,
+        uint256 sessionId,
+        bytes calldata label
+    ) internal view returns (bool) {
+        // compare non-bytes fields directly and bytes via keccak256
+        if (h.chainSrc != chainSrc) return false;
+        if (h.chainDest != chainDest) return false;
+        if (h.sender != sender) return false;
+        if (h.receiver != receiver) return false;
+        if (h.sessionId != sessionId) return false;
+        if (keccak256(abi.encodePacked(h.label)) != keccak256(abi.encodePacked(label))) return false;
+        return true;
     }
 
     /// @notice Computes the key for a message in the inbox using its ID.

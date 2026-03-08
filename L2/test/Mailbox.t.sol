@@ -66,7 +66,7 @@ contract MailboxTest is Setup {
         assertEq(hSessionId, 1, "Session ID should match");
         assertEq(keccak256(hLabel), keccak256("SWAP"), "Label should match");
 
-        bytes32 expectedRoot = keccak256(abi.encode(0, key, "hello"));
+        bytes32 expectedRoot = bytes32(0) ^ keccak256(abi.encode(key, "hello"));
         assertEq(
             mailbox.outboxRootPerChain(otherChain),
             expectedRoot,
@@ -106,7 +106,7 @@ contract MailboxTest is Setup {
         assertEq(hSessionId, 1, "Session ID should match");
         assertEq(keccak256(hLabel), keccak256("SWAP"), "Label should match");
 
-        bytes32 expectedRoot = keccak256(abi.encode(0, key, "salut"));
+        bytes32 expectedRoot = bytes32(0)^keccak256(abi.encode(key, "salut"));
         assertEq(mailbox.inboxRootPerChain(otherChain), expectedRoot, "Inbox root should match");
     }
 
@@ -136,8 +136,8 @@ contract MailboxTest is Setup {
         assertEq(mailbox.outbox(key1), "hello", "First message should remain");
         assertEq(mailbox.outbox(key2), "hello2", "Second message should match");
 
-        bytes32 root1 = keccak256(abi.encode(0, key1, "hello"));
-        bytes32 expectedRoot2 = keccak256(abi.encode(root1, key2, "hello2"));
+        bytes32 root1 = bytes32(0) ^ keccak256(abi.encode( key1, "hello"));
+        bytes32 expectedRoot2 = root1 ^ keccak256(abi.encode(key2, "hello2"));
         assertEq(
             mailbox.outboxRootPerChain(otherChain),
             expectedRoot2,
@@ -171,8 +171,8 @@ contract MailboxTest is Setup {
         assertEq(mailbox.inbox(key1), "salut", "First message should remain");
         assertEq(mailbox.inbox(key2), "salut2", "Second message should match");
 
-        bytes32 root1 = keccak256(abi.encode(0, key1, "salut"));
-        bytes32 expectedRoot2 = keccak256(abi.encode(root1, key2, "salut2"));
+        bytes32 root1 = bytes32(0) ^ keccak256(abi.encode(key1, "salut"));
+        bytes32 expectedRoot2 = root1 ^ keccak256(abi.encode( key2, "salut2"));
         assertEq(
             mailbox.inboxRootPerChain(otherChain),
             expectedRoot2,

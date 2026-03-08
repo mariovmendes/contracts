@@ -26,18 +26,19 @@ interface IBridge {
     /// @param data The encoded data sent in the message.
     event DataWritten(bytes data);
 
-    /// @notice Sent message to be picked up by destination sequencer.
-    /// @param data The full message to be decoded.
-    event MessageCreated(bytes data);
-
-    /// @notice Message was picked up by sequencer and read successfully.
-    /// @param data The ack message to be decoded.
-    event MessageReceived(bytes data);
+    /// @notice Emitted when data is unwritten from the mailbox.
+    /// @param data The encoded data sent in the message.
+    event DataUnwritten(bytes data);
 
     /// @notice Emitted when tokens are successfully received and minted on the destination chain.
     /// @param token The address of the token received.
     /// @param amount The amount of tokens received.
     event TokensReceived(address token, uint256 amount);
+
+    /// @notice Emitted when tokens are burned on the destination chain to be returned to origin chain.
+    /// @param token The address of the token.
+    /// @param amount The amount of tokens burned.
+    event TokensReturned(address token, uint256 amount);
 
 
     /// @notice Prepares the sending of tokens from the current chain to another chain by burning them and sending a message.
@@ -50,25 +51,6 @@ interface IBridge {
     /// @param sessionId A unique ID for this transaction session.
     /// @param destBridge The address of the Bridge contract on the destination chain.
     function send(
-        uint256 otherChainId,
-        address token,
-        address sender,
-        address receiver,
-        uint256 amount,
-        uint256 sessionId,
-        address destBridge
-    ) external;
-
-    /// @notice Confirms the sending of tokens from the current chain to another chain by saving the message to the mailbox.
-    /// @dev The message must have been save previously.
-    /// @param otherChainId The ID of the destination blockchain.
-    /// @param token The address of the token being transferred.
-    /// @param sender The address sending the tokens (must be the caller).
-    /// @param receiver The address that will receive the tokens on the destination chain.
-    /// @param amount The number of tokens to transfer.
-    /// @param sessionId A unique ID for this transaction session.
-    /// @param destBridge The address of the Bridge contract on the destination chain.
-    function sendConfirm(
         uint256 otherChainId,
         address token,
         address sender,
@@ -106,24 +88,6 @@ interface IBridge {
     /// @param srcBridge The bridge address on the source chain.
     function recv(
         uint256 chainSrc,
-        address sender,
-        address receiver,
-        uint256 sessionId,
-        address srcBridge,
-        bytes memory receivedMessage
-    ) external;
-
-    /// @notice Confirms the receiving of tokens by transferring the reserved tokens to the receiver address and saving changes to the mailbox
-    /// @dev The message must have been previously save.
-    /// @param otherChainId The ID of the source blockchain.
-    /// @param sender The address that sent the tokens from the source chain.
-    /// @param receiver The address receiving the tokens (must be the caller).
-    /// @param sessionId The unique ID for this transaction session.
-    /// @param srcBridge The address of the Bridge contract on the source chain.
-    /// @return token The address of the token that was transferred.
-    /// @return amount The number of tokens transferred.
-    function recvConfirm(
-        uint256 otherChainId,
         address sender,
         address receiver,
         uint256 sessionId,

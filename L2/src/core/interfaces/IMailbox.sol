@@ -31,7 +31,7 @@ interface IMailbox {
     /// @notice Error when the caller is not the coordinator.
     error InvalidCoordinator();
 
-    /// @notice Error when trying to read a message that doesn't exist.
+    /// @notice Error when trying to find a message that doesn't exist.
     error MessageNotFound();
 
     /// @notice Error when the ID is invalid (out of range).
@@ -41,6 +41,14 @@ interface IMailbox {
     /// @param index The position in the header list.
     /// @param key The message key.
     event NewInboxKey(uint256 indexed index, bytes32 key);
+
+    /// @notice Emitted when a previously added message is deleted from the inbox.
+    /// @param key The message key.
+    event DeletedInboxMessage(bytes32 key);
+
+    /// @notice Emitted when a previously written message is deleted from the outbox.
+    /// @param key The message key.
+    event DeletedOutboxMessage(bytes32 key);
 
     /// @notice Emitted when a new key is added to the outbox.
     /// @param index The position in the header list.
@@ -68,6 +76,21 @@ interface IMailbox {
     /// @param data Message data.
     function write(
         uint256 chainDest,
+        address receiver,
+        uint256 sessionId,
+        bytes calldata label,
+        bytes calldata data
+    ) external;
+
+    /// @notice Removes a previously written message from the outbox.
+    /// @dev Any contract can remove from the outbox.
+    /// @param chainMessageRecipient The ID of the chain receiving the message.
+    /// @param receiver The address that will receive the message.
+    /// @param sessionId The session number.
+    /// @param label The tag for the action.
+    /// @param data The message data to send.
+    function unwrite(
+        uint256 chainMessageRecipient,
         address receiver,
         uint256 sessionId,
         bytes calldata label,
