@@ -108,6 +108,15 @@ contract BridgeTest is Setup {
 
         vm.stopPrank();
 
+        vm.prank(COORDINATOR);
+
+        bridge.recvConfirm(otherChain, // source chain id (tokens incoming from chain B)
+        sender, // original sender of tokens
+        receiver, // receiver address
+        1, // session ID
+        mockSrcBridge // source bridge address
+        );
+
         assertEq(receivedToken, token, "Received token should match");
         assertEq(receivedAmount, amount, "Received amount should match");
 
@@ -292,15 +301,17 @@ contract BridgeTest is Setup {
             mockDestBridge // dest chain bridge address
         );
 
+        vm.stopPrank();
+
+        vm.startPrank(COORDINATOR);
         bridge.sendAbort(
-            otherChain, // destination chain id
             address(myToken), // token address
-            DEPLOYER, // sender of tokens
-            COORDINATOR, // receiver of tokens on dest chain
-            100, // amount of tokens
-            1, // session ID
-            mockDestBridge // dest chain bridge address
+            DEPLOYER,
+            100
         );
+
+        bytes memory data = abi.encode(DEPLOYER, COORDINATOR, address(myToken), 100);
+        mailbox.unwrite(otherChain, address(bridge), mockDestBridge, 1, "SEND", data);
 
         vm.stopPrank();
 
@@ -316,7 +327,7 @@ contract BridgeTest is Setup {
 
         Vm.Log[] memory entries = vm.getRecordedLogs();
 
-        bytes32 sigEvent = IBridge.DataUnwritten.selector;
+        bytes32 sigEvent = IBridge.TokensReturned.selector;
 
         bool found = false;
 
@@ -339,7 +350,7 @@ contract BridgeTest is Setup {
     }
 
     /// @dev Tests that only own address can be used to abort sending a message
-    function testAbortSendWrongAborter() public {
+    function testAbortSendNotCoordinator() public {
         address mockDestBridge = address(0xDEADBEEF);
 
         vm.prank(address(bridge));
@@ -363,15 +374,11 @@ contract BridgeTest is Setup {
 
         vm.startPrank(address(0xBAD));
 
-        vm.expectRevert(IBridge.Unauthorized.selector);
+        vm.expectRevert(IBridge.InvalidCoordinator.selector);
         bridge.sendAbort(
-            otherChain,
             address(myToken),
             DEPLOYER,
-            COORDINATOR,
-            100,
-            1,
-            mockDestBridge
+            100
         );
         vm.stopPrank();
     }
@@ -385,7 +392,6 @@ contract BridgeTest is Setup {
         uint256 amount = 100;
         bytes memory data = abi.encode(sender, receiver, token, amount);
 
-        // put the message in cache
         vm.prank(COORDINATOR);
 
         mailbox.putInbox(
@@ -397,7 +403,7 @@ contract BridgeTest is Setup {
             data // data
         );
 
-        vm.startPrank(receiver);
+        vm.prank(receiver);
 
         // receive tokens on chain A
         (address receivedToken, uint256 receivedAmount) = bridge.recv(
@@ -408,6 +414,8 @@ contract BridgeTest is Setup {
             mockSrcBridge // source bridge address
         );
 
+        vm.startPrank(COORDINATOR);
+
         bridge.recvAbort(
             otherChain, // source chain id (tokens incoming from chain B)
             sender, // original sender of tokens
@@ -415,6 +423,9 @@ contract BridgeTest is Setup {
             1, // session ID
             mockSrcBridge // source bridge address
         );
+
+        bytes memory message = abi.encode("OK");
+        mailbox.unwrite(otherChain,address(bridge), mockSrcBridge, 1, "ACK SEND", message);
 
         vm.stopPrank();
 
@@ -424,7 +435,7 @@ contract BridgeTest is Setup {
         assertEq(
             myToken.balanceOf(receiver),
             0,
-            "Tokens should be removed"
+            "Tokens should not be in receiver"
         );
 
         // compute ACK key in outbox to check OK response
@@ -445,7 +456,7 @@ contract BridgeTest is Setup {
     }
 
     /// @dev Tests that only own address can be used to abort receiving a message
-    function testAbortReceiveTokensWrongAborter() public {
+    function testAbortReceiveTokensNotCoordinator() public {
         address mockSrcBridge = address(0xABCDEF);
         address sender = DEPLOYER; // original sender on source chain
         address receiver = COORDINATOR; //receiver on dest chain
@@ -480,7 +491,7 @@ contract BridgeTest is Setup {
 
         vm.startPrank(address(0xBAD));
 
-        vm.expectRevert(IBridge.Unauthorized.selector);
+        vm.expectRevert(IBridge.InvalidCoordinator.selector);
         bridge.recvAbort(
             otherChain,
             DEPLOYER,

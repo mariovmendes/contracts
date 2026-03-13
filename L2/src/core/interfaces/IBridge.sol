@@ -13,6 +13,9 @@ interface IBridge {
     /// @notice Error thrown when the caller is not authorized (not the sender or receiver).
     error Unauthorized();
 
+    /// @notice Error when the caller is not the coordinator.
+    error InvalidCoordinator();
+
     /// @notice Error thrown when there is no message from the source chain.
     error EmptySourceChainMessage();
 
@@ -26,10 +29,6 @@ interface IBridge {
     /// @param data The encoded data sent in the message.
     event DataWritten(bytes data);
 
-    /// @notice Emitted when data is unwritten from the mailbox.
-    /// @param data The encoded data sent in the message.
-    event DataUnwritten(bytes data);
-
     /// @notice Emitted when tokens are successfully received and minted on the destination chain.
     /// @param token The address of the token received.
     /// @param amount The amount of tokens received.
@@ -39,6 +38,11 @@ interface IBridge {
     /// @param token The address of the token.
     /// @param amount The amount of tokens burned.
     event TokensReturned(address token, uint256 amount);
+
+    /// @notice Emitted when tokens are sent to the destination chain's address.
+    /// @param token The address of the token.
+    /// @param amount The amount of tokens delivered.
+    event TokensDelivered(address token, uint256 amount);
 
 
     /// @notice Prepares the sending of tokens from the current chain to another chain by burning them and sending a message.
@@ -61,22 +65,13 @@ interface IBridge {
     ) external;
 
     /// @notice Aborts the sending of tokens from the current chain to another chain by returning amount tokens to the owner.
-    /// @dev The message must have been save previously.
-    /// @param otherChainId The ID of the destination blockchain.
     /// @param token The address of the token being transferred.
-    /// @param sender The address sending the tokens (must be the caller).
-    /// @param receiver The address that will receive the tokens on the destination chain.
+    /// @param sender The address that will send the tokens to the destination chain.
     /// @param amount The number of tokens to transfer.
-    /// @param sessionId A unique ID for this transaction session.
-    /// @param destBridge The address of the Bridge contract on the destination chain.
     function sendAbort(
-        uint256 otherChainId,
         address token,
         address sender,
-        address receiver,
-        uint256 amount,
-        uint256 sessionId,
-        address destBridge
+        uint256 amount
     ) external;
 
 

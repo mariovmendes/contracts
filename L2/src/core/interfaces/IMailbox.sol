@@ -85,12 +85,14 @@ interface IMailbox {
     /// @notice Removes a previously written message from the outbox.
     /// @dev Any contract can remove from the outbox.
     /// @param chainMessageRecipient The ID of the chain receiving the message.
+    /// @param sender Sender's address.
     /// @param receiver The address that will receive the message.
     /// @param sessionId The session number.
     /// @param label The tag for the action.
     /// @param data The message data to send.
     function unwrite(
         uint256 chainMessageRecipient,
+        address sender,
         address receiver,
         uint256 sessionId,
         bytes calldata label,

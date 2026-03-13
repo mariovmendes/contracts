@@ -165,29 +165,31 @@ contract Mailbox is IMailbox {
     }
 
     /// @notice Removes a previously written message from the outbox.
-    /// @dev Any contract can remove from the outbox.
+    /// @dev The coordinator is the only one allowed to remove messages from the outbox.
     /// @param chainMessageRecipient The ID of the chain receiving the message.
+    /// @param sender The address that sent the message.
     /// @param receiver The address that will receive the message.
     /// @param sessionId The session number.
     /// @param label The tag for the action.
     /// @param data The message data to send.
     function unwrite(
         uint256 chainMessageRecipient,
+        address sender,
         address receiver,
         uint256 sessionId,
         bytes calldata label,
         bytes calldata data
-    ) external {
+    ) external onlyCoordinator {
         bytes32 key = getKey(
             block.chainid,
             chainMessageRecipient,
-            msg.sender,
+            sender,
             receiver,
             sessionId,
             label
         );
 
-        if (outbox[key].length == 0 && !createdKeys[key]) {
+        if (outbox[key].length == 0 && !createdKeys[key] && keccak256(abi.encodePacked(outbox[key])) != keccak256(abi.encodePacked(data))) {
             revert MessageNotFound();
         }
 
@@ -199,7 +201,7 @@ contract Mailbox is IMailbox {
             if(_headerEquals(messageHeaderListOutbox[i],
                 block.chainid,
                 chainMessageRecipient,
-                msg.sender,
+                sender,
                 receiver,
                 sessionId,
                 label
