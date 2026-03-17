@@ -142,10 +142,6 @@ contract Bridge is IBridge {
         uint256 sessionId,
         address srcBridge
     ) external onlyCoordinator {
-        if (msg.sender != receiver) {
-            revert Unauthorized();
-        }
-
         bytes memory message = mailbox.read(
             otherChainId,
             srcBridge,
@@ -169,9 +165,6 @@ contract Bridge is IBridge {
 
         if (readSender != sender) {
             revert SenderMismatch();
-        }
-        if (readReceiver != receiver) {
-            revert ReceiverMismatch();
         }
 
         IBridgeableToken(token).transfer(receiver, amount);
@@ -193,10 +186,6 @@ contract Bridge is IBridge {
         uint256 sessionId,
         address srcBridge
     ) external onlyCoordinator {
-        if (msg.sender != receiver) {
-            revert Unauthorized();
-        }
-
         bytes memory message = mailbox.read(
             otherChainId,
             srcBridge,
@@ -220,9 +209,6 @@ contract Bridge is IBridge {
 
         if (readSender != sender) {
             revert SenderMismatch();
-        }
-        if (readReceiver != receiver) {
-            revert ReceiverMismatch();
         }
 
         emit TokensReturned(token, amount);
