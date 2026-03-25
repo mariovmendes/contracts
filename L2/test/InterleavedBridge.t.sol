@@ -427,6 +427,8 @@ contract BridgeTest is Setup {
         bytes memory message = abi.encode("OK");
         mailbox.unwrite(otherChain,address(bridge), mockSrcBridge, 1, "ACK SEND", message);
 
+        // TODO: REMOVE INBOX MISSING.
+
         vm.stopPrank();
 
         assertEq(receivedToken, token, "Received token should match");

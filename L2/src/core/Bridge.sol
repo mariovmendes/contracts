@@ -211,6 +211,8 @@ contract Bridge is IBridge {
             revert SenderMismatch();
         }
 
+        // TODO: Burn previously minted tokens now stored in the bridge's address.
+
         emit TokensReturned(token, amount);
     }
 
