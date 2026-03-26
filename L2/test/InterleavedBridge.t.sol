@@ -305,13 +305,17 @@ contract BridgeTest is Setup {
 
         vm.startPrank(COORDINATOR);
         bridge.sendAbort(
-            address(myToken), // token address
+            otherChain,
+            address(myToken),
             DEPLOYER,
-            100
+            COORDINATOR,
+            100,
+            1,
+            mockDestBridge
         );
 
-        bytes memory data = abi.encode(DEPLOYER, COORDINATOR, address(myToken), 100);
-        mailbox.unwrite(otherChain, address(bridge), mockDestBridge, 1, "SEND", data);
+        //bytes memory data = abi.encode(DEPLOYER, COORDINATOR, address(myToken), 100);
+        //mailbox.unwrite(otherChain, address(bridge), mockDestBridge, 1, "SEND", data);
 
         vm.stopPrank();
 
@@ -376,9 +380,13 @@ contract BridgeTest is Setup {
 
         vm.expectRevert(IBridge.InvalidCoordinator.selector);
         bridge.sendAbort(
+            otherChain,
             address(myToken),
             DEPLOYER,
-            100
+            COORDINATOR,
+            100,
+            1,
+            mockDestBridge
         );
         vm.stopPrank();
     }
@@ -424,10 +432,17 @@ contract BridgeTest is Setup {
             mockSrcBridge // source bridge address
         );
 
-        bytes memory message = abi.encode("OK");
-        mailbox.unwrite(otherChain,address(bridge), mockSrcBridge, 1, "ACK SEND", message);
+        //bytes memory message = abi.encode("OK");
+        //mailbox.unwrite(otherChain,address(bridge), mockSrcBridge, 1, "ACK SEND", message);
 
         // TODO: REMOVE INBOX MISSING.
+        mailbox.removeInbox(otherChain, // source chain id
+        mockSrcBridge, // sender address is source bridge
+        address(bridge), // receiver address
+        1, // session ID
+        "SEND", // label
+        data // data
+        );
 
         vm.stopPrank();
 
@@ -448,6 +463,21 @@ contract BridgeTest is Setup {
             mockSrcBridge, // receiver for ACK (original source bridge)
             1, // session id
             "ACK SEND" // label
+        );
+
+        bytes32 receivedKey = mailbox.getKey(
+            otherChain,
+            thisChain,
+            mockSrcBridge,
+            address(bridge),
+            1,
+            "SEND"
+        );
+
+        assertEq(
+            mailbox.inbox(receivedKey),
+            bytes(""),
+            "Received message should be removed from inbox"
         );
 
         assertEq(

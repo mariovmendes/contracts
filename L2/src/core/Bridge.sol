@@ -73,11 +73,20 @@ contract Bridge is IBridge {
     /// @param sender The address that will send the tokens to the destination chain.
     /// @param amount The number of tokens to transfer.
     function sendAbort(
+        uint256 otherChainId,
         address token,
         address sender,
-        uint256 amount
+        address receiver,
+        uint256 amount,
+        uint256 sessionId,
+        address destBridge
     ) external onlyCoordinator {
         IBridgeableToken(token).mint(sender, amount);
+
+        bytes memory data = abi.encode(sender, receiver, token, amount);
+
+        mailbox.unwrite(otherChainId, destBridge, sessionId, "SEND", data);
+
         emit TokensReturned(token,amount);
     }
 
@@ -211,7 +220,9 @@ contract Bridge is IBridge {
             revert SenderMismatch();
         }
 
-        // TODO: Burn previously minted tokens now stored in the bridge's address.
+        message = abi.encode("OK");
+        mailbox.unwrite(otherChainId, srcBridge, sessionId, "ACK SEND", message);
+        IBridgeableToken(token).burn(address(this), amount);
 
         emit TokensReturned(token, amount);
     }

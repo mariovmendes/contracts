@@ -165,25 +165,23 @@ contract Mailbox is IMailbox {
     }
 
     /// @notice Removes a previously written message from the outbox.
-    /// @dev The coordinator is the only one allowed to remove messages from the outbox.
+    /// @dev Executed by the bridge. Marks the key as unused, removes the data and updates the outbox root.
     /// @param chainMessageRecipient The ID of the chain receiving the message.
-    /// @param sender The address that sent the message.
     /// @param receiver The address that will receive the message.
     /// @param sessionId The session number.
     /// @param label The tag for the action.
     /// @param data The message data to send.
     function unwrite(
         uint256 chainMessageRecipient,
-        address sender,
         address receiver,
         uint256 sessionId,
         bytes calldata label,
         bytes calldata data
-    ) external onlyCoordinator {
+    ) external {
         bytes32 key = getKey(
             block.chainid,
             chainMessageRecipient,
-            sender,
+            msg.sender,
             receiver,
             sessionId,
             label
@@ -201,7 +199,7 @@ contract Mailbox is IMailbox {
             if(_headerEquals(messageHeaderListOutbox[i],
                 block.chainid,
                 chainMessageRecipient,
-                sender,
+                msg.sender,
                 receiver,
                 sessionId,
                 label
@@ -288,7 +286,7 @@ contract Mailbox is IMailbox {
             label
         );
 
-        if (inbox[key].length == 0 && !createdKeys[key]) {
+        if (inbox[key].length == 0 && !createdKeys[key] && keccak256(abi.encodePacked(inbox[key])) != keccak256(abi.encodePacked(data))) {
             revert MessageNotFound();
         }
 

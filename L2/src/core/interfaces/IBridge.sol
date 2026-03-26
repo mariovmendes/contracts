@@ -65,13 +65,21 @@ interface IBridge {
     ) external;
 
     /// @notice Aborts the sending of tokens from the current chain to another chain by returning amount tokens to the owner.
+    /// @param otherChainId The ID of the destination blockchain.
     /// @param token The address of the token being transferred.
-    /// @param sender The address that will send the tokens to the destination chain.
-    /// @param amount The number of tokens to transfer.
+    /// @param sender The address sending the tokens (must be the caller).
+    /// @param receiver The address that would receive the tokens on the destination chain.
+    /// @param amount The number of tokens to cancel transferring.
+    /// @param sessionId A unique ID for this transaction session.
+    /// @param destBridge The address of the Bridge contract on the destination chain.
     function sendAbort(
+        uint256 otherChainId,
         address token,
         address sender,
-        uint256 amount
+        address receiver,
+        uint256 amount,
+        uint256 sessionId,
+        address destBridge
     ) external;
 
 
