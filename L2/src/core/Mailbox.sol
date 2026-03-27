@@ -14,6 +14,9 @@ import { console } from "forge-std/console.sol";
  */
 contract Mailbox is IMailbox {
 
+    /// @notice Parameter of the BN254 curve definition
+    uint256 constant BN254_R = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+
     /// @notice The address of the coordinator that can add messages to the inbox.
     /// @dev This is set once in the constructor and can't be changed.
     address public immutable COORDINATOR;
@@ -157,9 +160,17 @@ contract Mailbox is IMailbox {
         if (outboxRootPerChain[chainMessageRecipient] == bytes32(0)) {
             chainIDsOutbox.push(chainMessageRecipient);
         }
-        outboxRootPerChain[chainMessageRecipient] ^= keccak256(
+
+        uint256 hashMsg = uint256(keccak256(
             abi.encode(key, data)
-        );
+        )) % BN254_R;
+
+        require(hashMsg != 0, "hash collision with zero");
+
+        uint256 curr = uint256(outboxRootPerChain[chainMessageRecipient]);
+        if (curr == 0) curr = 1;
+
+        outboxRootPerChain[chainMessageRecipient] = bytes32(mulmod(curr, hashMsg, BN254_R));
 
         emit NewOutboxKey(messageHeaderListOutbox.length - 1, key);
     }
