@@ -1,0 +1,597 @@
+------------------------- MODULE InterleavedBridge -------------------------
+EXTENDS Integers
+
+CONSTANTS CHAINS, SESSIONS, TOKENS, USERS, 
+          BRIDGES, INITIAL_BALANCE, MAX_AMOUNT, Empty, TIMEOUT
+
+VARIABLES initialBalances,
+          chainSessionStates, 
+          chainSessionRoles,
+          chainSessionMembers,
+          generalSessionStates, 
+          accountBalances, 
+          msgs, 
+          bridgesTokenBalances, 
+          inbox, 
+          outbox,
+          spClock,
+          chainClock 
+
+(*************************************************************************)
+(* OBS:                                                                  *)
+(* This spec assumes sessionId uniquely identifies a bridging process.   *)
+(* This is crucial to ensure that different processes do not affect the  *)
+(* same messages of the inboxes/outboxes.                                *)
+(*************************************************************************)
+
+vars == <<initialBalances, chainSessionStates, chainSessionRoles, chainSessionMembers,
+          generalSessionStates, accountBalances, msgs,
+          bridgesTokenBalances, inbox, outbox,spClock, chainClock>>
+
+Messages2PC ==
+        [sessionId: SESSIONS, chain: CHAINS, type: {"Vote"},    value: BOOLEAN]
+        \union
+        [sessionId: SESSIONS,               type: {"Decided"}, value: BOOLEAN]
+
+SessionStateSet == {"unprocessed", "processing", "confirmed", "aborted"}
+
+LABEL == {"SEND", "ACK SEND"}
+
+MessageData == [sender: USERS, receiver: USERS, token: TOKENS,
+                amount: 0..MAX_AMOUNT, consumed: BOOLEAN]
+
+(*************************************************************************)
+(* Type Invariant                                                        *)
+(*************************************************************************)
+
+TPTypeOK ==
+    /\ initialBalances      \in [SESSIONS -> [CHAINS \X USERS -> 0..MAX_AMOUNT]]
+    /\ accountBalances      \in [CHAINS \X USERS -> 0..MAX_AMOUNT]
+    /\ generalSessionStates \in [SESSIONS -> SessionStateSet]
+    /\ chainSessionStates   \in [CHAINS \X SESSIONS -> SessionStateSet]
+    /\ chainSessionRoles \in [CHAINS \X SESSIONS -> Nat]
+    /\ chainSessionMembers \in [SESSIONS -> SUBSET CHAINS]
+    /\ bridgesTokenBalances  \in [BRIDGES \X TOKENS -> 0..MAX_AMOUNT]
+    /\ msgs                 \subseteq Messages2PC
+    /\ inbox                \in [BRIDGES \X CHAINS \X CHAINS \X USERS \X USERS 
+                                \X SESSIONS \X LABEL
+                                 -> MessageData \cup {Empty}]
+    /\ outbox               \in [BRIDGES \X CHAINS \X CHAINS \X USERS \X USERS 
+                                \X SESSIONS \X LABEL 
+                                -> MessageData \cup {Empty}]
+    /\ spClock              \in [SESSIONS -> 0..TIMEOUT]
+    /\ chainClock           \in [CHAINS \X SESSIONS -> 0..TIMEOUT]
+
+(*************************************************************************)
+(* Initialization                                                        *)
+(*************************************************************************)
+
+TPInit ==
+    /\ initialBalances = [s \in SESSIONS |-> [cu \in CHAINS \X USERS |-> 0]]
+    /\ accountBalances = [cu \in CHAINS \X USERS |-> INITIAL_BALANCE]
+    /\ generalSessionStates = [s \in SESSIONS |-> "unprocessed"]
+    /\ chainSessionStates   = [chain \in CHAINS, s \in SESSIONS |-> "unprocessed"]
+    /\ chainSessionRoles = [chain \in CHAINS, s \in SESSIONS |-> 0]
+    /\ chainSessionMembers = [s \in SESSIONS |-> {}]
+    /\ bridgesTokenBalances  = [bridge \in BRIDGES, token \in TOKENS |-> 0]
+    /\ msgs                 = {}
+    /\ inbox  = [b \in BRIDGES, sc \in CHAINS, dc \in CHAINS, 
+                 u \in USERS,   v \in USERS,   s \in SESSIONS, 
+                 l \in LABEL |-> Empty]
+    /\ outbox = [b \in BRIDGES, sc \in CHAINS, dc \in CHAINS,
+                 u \in USERS,   v \in USERS,   s \in SESSIONS,
+                 l \in LABEL |-> Empty]
+    /\ spClock    = [s \in SESSIONS |-> 0]
+    /\ chainClock = [chain \in CHAINS, s \in SESSIONS |-> 0]
+    
+(*************************************************************************)
+(* Helper Functions                                                      *)
+(*************************************************************************)
+
+ChainsInvolvedInSession(sessId) == chainSessionMembers[sessId]
+
+ChainHasVoted(chain, sessId) ==
+    \/ [sessionId |-> sessId, chain |-> chain, type |-> "Vote", value |-> TRUE]  \in msgs
+    \/ [sessionId |-> sessId, chain |-> chain, type |-> "Vote", value |-> FALSE] \in msgs
+
+(*************************************************************************)
+(* Mailbox Operations (not called, changed directly by functions)        *)
+(*************************************************************************)
+
+(*Write(bridge, chainSender, chainReceiver, sender, receiver, sessionId, label, data) ==
+    /\ outbox' = [outbox EXCEPT
+                    ![bridge, chainSender, chainReceiver,
+                      sender, receiver, sessionId, label] = data]
+    /\ UNCHANGED <<inbox, chainSessionStates, generalSessionStates,
+                   accountBalances, bridgesTokenBalances, msgs>>
+
+PutInbox(bridge, chainSender, chainReceiver, sender, receiver, sessionId, label, data) ==
+    /\ inbox' = [inbox EXCEPT
+                    ![bridge, chainSender, chainReceiver,
+                      sender, receiver, sessionId, label] = data]
+    /\ UNCHANGED <<outbox, chainSessionStates, generalSessionStates,
+                   accountBalances, bridgesTokenBalances, msgs>>*)
+                   
+                   
+(*************************************************************************)
+(* Clock Ticking                                                         *)
+(* Clocks only advance while session is processing                       *)
+(*************************************************************************)
+
+SPTick(sessId) ==
+    /\ generalSessionStates[sessId] = "processing"
+    /\ spClock[sessId] < TIMEOUT
+    /\ spClock' = [spClock EXCEPT ![sessId] = @ + 1]
+    /\ UNCHANGED <<initialBalances, chainSessionStates, chainSessionRoles, chainSessionMembers, 
+                   generalSessionStates, accountBalances,
+                   msgs, bridgesTokenBalances, inbox, outbox, chainClock>>
+
+ChainTick(chain, sessId) ==
+    /\ chainSessionStates[chain, sessId] = "processing"
+    /\ chainClock[chain, sessId] < TIMEOUT
+    /\ chainClock' = [chainClock EXCEPT ![chain, sessId] = @ + 1]
+    /\ UNCHANGED <<initialBalances, chainSessionStates, chainSessionRoles, chainSessionMembers, 
+                   generalSessionStates, accountBalances,
+                   msgs, bridgesTokenBalances, inbox, outbox, spClock>>
+
+(*************************************************************************)
+(* Timeout Actions                                                       *)
+(* Timeout triggers abort of the whole session                           *)
+(*************************************************************************)
+
+SPTimeout(sessId) ==
+    /\ generalSessionStates[sessId] = "processing"
+    /\ spClock[sessId] = TIMEOUT
+    /\ generalSessionStates' = [generalSessionStates EXCEPT ![sessId] = "aborted"]
+    /\ msgs' = msgs \union {[sessionId |-> sessId, type |-> "Decided", value |-> FALSE]}
+    /\ UNCHANGED <<initialBalances, chainSessionStates, chainSessionRoles, chainSessionMembers, 
+                   accountBalances, bridgesTokenBalances,
+                   inbox, outbox, spClock, chainClock>>
+
+ChainTimeout(chain, sessId) ==
+    /\ chainSessionStates[chain, sessId] = "processing"
+    /\ chainClock[chain, sessId] = TIMEOUT
+    \* Chain votes abort due to timeout
+    /\ msgs' = msgs \union {[sessionId |-> sessId, chain |-> chain,
+                              type |-> "Vote", value |-> FALSE]}
+    /\ UNCHANGED <<initialBalances, chainSessionStates, chainSessionRoles, chainSessionMembers, 
+                   generalSessionStates, accountBalances, bridgesTokenBalances,
+                   inbox, outbox, spClock, chainClock>>
+                   
+ChainSkipAbort(chain, sessId) ==
+    /\ generalSessionStates[sessId] = "aborted"
+    /\ chainSessionStates[chain, sessId] = "unprocessed"
+    /\ [sessionId |-> sessId, type |-> "Decided", value |-> FALSE] \in msgs
+    /\ chainSessionStates' = [chainSessionStates EXCEPT 
+                                ![chain, sessId] = "aborted"]
+    /\ UNCHANGED <<initialBalances, generalSessionStates, chainSessionRoles, chainSessionMembers,
+                   accountBalances, msgs,
+                   bridgesTokenBalances, inbox, outbox, spClock, chainClock>>
+
+(*************************************************************************)
+(* Simulation Phase                                                      *)
+(* User sends and receives tokens between two chains                     *)
+(*************************************************************************)
+
+Send(srcChain, destChain, sender, receiver, token, amount, sessionId, senderBridge, destBridge) ==
+    /\ srcChain # destChain
+    /\ senderBridge # destBridge
+    /\ sender = receiver
+    /\ ~ChainHasVoted(srcChain, sessionId)
+    /\ generalSessionStates[sessionId] = "processing"
+    /\ chainSessionStates[srcChain, sessionId] = "processing"
+    /\ accountBalances[srcChain, sender] >= amount
+    /\ amount > 0
+    /\ outbox[senderBridge, srcChain, destChain, sender, receiver, sessionId, "SEND"] = Empty
+    /\  ~(\E dChain \in CHAINS, u, v \in USERS: (outbox[senderBridge, srcChain, dChain, u, v, 
+            sessionId, "SEND"] # Empty))
+    /\ LET msg == [sender   |-> sender,   receiver |-> receiver,
+                   token    |-> token,    amount   |-> amount,
+                   consumed |-> FALSE]
+       IN
+       /\ accountBalances' = [accountBalances EXCEPT ![srcChain, sender] = @ - amount]
+       /\ outbox'          = [outbox EXCEPT
+                                ![senderBridge, srcChain, destChain,
+                                  sender, receiver, sessionId, "SEND"] = msg]
+    /\ chainSessionRoles' = [chainSessionRoles EXCEPT ![srcChain, sessionId] = @ + 1]
+    /\ chainSessionMembers' = [chainSessionMembers EXCEPT ![sessionId] = @ \cup {srcChain}]
+    /\ UNCHANGED <<initialBalances, inbox, chainSessionStates, generalSessionStates,
+                   bridgesTokenBalances, msgs, spClock, chainClock>>
+
+\* Sequencer relays SEND from src bridge outbox to dest bridge inbox
+SeqRelay(srcChain, destChain, sender, receiver, sessionId, senderBridge, destBridge) ==
+    /\ srcChain # destChain
+    /\ senderBridge # destBridge
+    /\ sender = receiver
+    /\ generalSessionStates[sessionId] = "processing"
+    /\ outbox[senderBridge, srcChain, destChain,
+               sender, receiver, sessionId, "SEND"] # Empty  
+    /\ inbox[destBridge, srcChain, destChain,
+              sender, receiver, sessionId, "SEND"] = Empty
+    /\ LET msg == outbox[senderBridge, srcChain, destChain,
+                          sender, receiver, sessionId, "SEND"]
+       IN inbox' = [inbox EXCEPT
+                        ![destBridge, srcChain, destChain,
+                          sender, receiver, sessionId, "SEND"] = msg]
+    /\ UNCHANGED <<initialBalances, outbox, accountBalances, chainSessionStates, chainSessionMembers,
+                   chainSessionRoles,
+                   generalSessionStates, bridgesTokenBalances, msgs, spClock, chainClock>>
+
+\* Sequencer relays ACK SEND from dest bridge outbox to src bridge inbox
+SeqRelayAck(srcChain, destChain, sender, receiver, sessionId, senderBridge, destBridge) ==
+    /\ srcChain # destChain
+    /\ senderBridge # destBridge
+    /\ sender = receiver
+    /\ generalSessionStates[sessionId] = "processing"
+    /\ outbox[destBridge, destChain, srcChain,
+               receiver, sender, sessionId, "ACK SEND"] # Empty
+    /\ inbox[senderBridge, destChain, srcChain,
+              receiver, sender, sessionId, "ACK SEND"] = Empty
+    /\ LET msg == outbox[destBridge, destChain, srcChain,
+                          receiver, sender, sessionId, "ACK SEND"]
+       IN inbox' = [inbox EXCEPT
+                        ![senderBridge, destChain, srcChain,
+                          receiver, sender, sessionId, "ACK SEND"] = msg]
+    /\ UNCHANGED <<initialBalances, outbox, accountBalances, chainSessionStates, chainSessionMembers, 
+                   chainSessionRoles,
+                   generalSessionStates, bridgesTokenBalances, msgs, spClock, chainClock>>
+
+Recv(srcChain, destChain, sender, receiver, token, amount, sessionId, senderBridge, destBridge) ==
+    /\ srcChain # destChain
+    /\ senderBridge # destBridge
+    /\ sender = receiver
+    /\ ~ChainHasVoted(destChain, sessionId)
+    /\ generalSessionStates[sessionId] = "processing"
+    /\ chainSessionStates[destChain, sessionId] = "processing"
+    /\ amount > 0
+    /\ inbox[destBridge, srcChain, destChain,
+              sender, receiver, sessionId, "SEND"] # Empty
+    /\  ~(\E dChain \in CHAINS, u, v \in USERS: (inbox[destBridge, srcChain, dChain, u, v, 
+            sessionId, "SEND"] # Empty) /\ (u # sender \/ v # receiver))
+    /\ LET msg == inbox[destBridge, srcChain, destChain,
+                         sender, receiver, sessionId, "SEND"]
+       IN
+       /\ msg.sender    = sender
+       /\ msg.receiver  = receiver
+       /\ msg.token     = token
+       /\ msg.amount    = amount
+       /\ msg.consumed  = FALSE  
+       /\ chainSessionRoles' = [chainSessionRoles EXCEPT ![destChain, sessionId] = @ + 1]
+       /\ chainSessionMembers' = [chainSessionMembers EXCEPT ![sessionId] = @ \cup {destChain}]
+       /\ bridgesTokenBalances' = [bridgesTokenBalances EXCEPT ![destBridge, token] = @ + amount]
+       /\ inbox' = [inbox EXCEPT
+                        ![destBridge, srcChain, destChain,
+                          sender, receiver, sessionId, "SEND"] =
+                            [msg EXCEPT !.consumed = TRUE]]
+       /\ LET ackMsg == [sender   |-> sender, receiver |-> receiver,
+                         token    |-> token,    amount   |-> amount,
+                         consumed |-> FALSE]
+          IN outbox' = [outbox EXCEPT
+                            ![destBridge, destChain, srcChain,
+                              receiver, sender, sessionId, "ACK SEND"] = ackMsg]
+    /\ UNCHANGED <<initialBalances, accountBalances, chainSessionStates,
+                   generalSessionStates, msgs, spClock, chainClock>>
+
+(*************************************************************************)
+(* 2PC: Chain Voting                                                     *)
+(*************************************************************************)
+
+ChainStart(chain, sessId) ==
+    /\ generalSessionStates[sessId] = "processing"
+    /\ chainSessionStates[chain, sessId] = "unprocessed"
+    /\ chainSessionStates' = [chainSessionStates EXCEPT ![chain, sessId] = "processing"]
+    /\ UNCHANGED <<initialBalances, generalSessionStates, chainSessionRoles, chainSessionMembers,
+                   accountBalances, msgs,
+                   bridgesTokenBalances, inbox, outbox, spClock, chainClock>>
+
+ChainVoteConfirm(chain, sessId, senderBridge, destBridge, 
+                 srcChain, destChain, sender, receiver) ==
+    /\ generalSessionStates[sessId] = "processing"
+    /\ chainSessionStates[chain, sessId] = "processing"
+    /\ chainClock[chain, sessId] < TIMEOUT
+    /\ \/ \* This chain is the src chain
+          /\ chain = srcChain
+          /\ outbox[senderBridge, srcChain, destChain,
+                    sender, receiver, sessId, "SEND"] # Empty
+          /\ inbox[senderBridge, destChain, srcChain,    (* ← senderBridge, not destBridge *)
+                   receiver, sender, sessId, "ACK SEND"] # Empty
+       \/ \* This chain is the dest chain
+          /\ chain = destChain
+          /\ inbox[destBridge, srcChain, destChain,      (* ← destBridge *)
+                   sender, receiver, sessId, "SEND"] # Empty
+          /\ inbox[destBridge, srcChain, destChain,
+                   sender, receiver, sessId, "SEND"].consumed = TRUE
+    /\ \A b \in BRIDGES, oC \in CHAINS, sen, rec \in USERS : outbox[b, chain, oC, sen, rec, sessId, 
+                "ACK SEND"] # Empty => \E b2 \in BRIDGES : inbox[b2, chain, oC, sen, rec, sessId, 
+                "ACK SEND"] # Empty
+    /\ msgs' = msgs \union {[sessionId |-> sessId, chain |-> chain,
+                              type |-> "Vote", value |-> TRUE]}
+    /\ UNCHANGED <<initialBalances, chainSessionStates, chainSessionMembers, generalSessionStates, 
+                   chainSessionRoles, accountBalances,
+                   bridgesTokenBalances, inbox, outbox, spClock, chainClock>>
+
+ChainVoteAbort(chain, sessId) ==
+    /\ generalSessionStates[sessId] = "processing"
+    /\ chainSessionStates[chain, sessId] = "processing"
+    /\ chainClock[chain, sessId] < TIMEOUT
+    /\ msgs'               = msgs \union {[sessionId |-> sessId, chain |-> chain,
+                                           type |-> "Vote", value |-> FALSE]}
+    /\ UNCHANGED <<initialBalances, chainSessionStates, chainSessionMembers, generalSessionStates, 
+                   chainSessionRoles, accountBalances,
+                   bridgesTokenBalances, inbox, outbox, spClock, chainClock>>
+
+(*************************************************************************)
+(* 2PC: Shared Publisher Decision                                        *)
+(*************************************************************************)
+
+SPStartTransfer(sessId) ==
+    /\ generalSessionStates[sessId] = "unprocessed"
+    /\ generalSessionStates' = [generalSessionStates EXCEPT ![sessId] = "processing"]
+    /\ initialBalances' = [initialBalances EXCEPT  ![sessId] = accountBalances]
+    /\ UNCHANGED <<chainSessionStates, chainSessionRoles, chainSessionMembers, accountBalances, msgs,
+                   bridgesTokenBalances, inbox, outbox, spClock, chainClock>>
+
+AllVotedConfirm(sessId) ==
+    \A chain \in ChainsInvolvedInSession(sessId) :
+        [sessionId |-> sessId, chain |-> chain, type |-> "Vote", value |-> TRUE] \in msgs
+
+OneVotedAbort(sessId) ==
+    \E chain \in CHAINS :
+        [sessionId |-> sessId, chain |-> chain, type |-> "Vote", value |-> FALSE] \in msgs
+
+SPDecideConfirm(sessId) ==
+    /\ generalSessionStates[sessId] = "processing"
+    /\ ChainsInvolvedInSession(sessId) # {}
+    /\ AllVotedConfirm(sessId)
+    /\ spClock[sessId] < TIMEOUT 
+    /\ generalSessionStates' = [generalSessionStates EXCEPT ![sessId] = "confirmed"]
+    /\ msgs' = msgs \union {[sessionId |-> sessId, type |-> "Decided", value |-> TRUE]}
+    /\ UNCHANGED <<initialBalances, chainSessionStates, chainSessionRoles, chainSessionMembers, 
+                    accountBalances, bridgesTokenBalances, inbox, outbox, spClock, chainClock>>
+
+SPDecideAbort(sessId) ==
+    /\ generalSessionStates[sessId] = "processing"
+    /\ (OneVotedAbort(sessId) \/ spClock[sessId] = TIMEOUT)
+    /\ generalSessionStates' = [generalSessionStates EXCEPT ![sessId] = "aborted"]
+    /\ msgs' = msgs \union {[sessionId |-> sessId, type |-> "Decided", value |-> FALSE]}
+    /\ UNCHANGED <<initialBalances, chainSessionStates, chainSessionRoles, chainSessionMembers, 
+                    accountBalances, bridgesTokenBalances, inbox, outbox, spClock, chainClock>>
+
+(*************************************************************************)
+(* Post-Decision Phase                                                   *)
+(*************************************************************************)
+
+SendConfirm(srcChain, destChain, sender, receiver,
+            sessionId, senderBridge, destBridge) ==
+    /\ srcChain # destChain
+    /\ senderBridge # destBridge
+    /\ sender = receiver
+    /\ chainSessionRoles[srcChain, sessionId] > 0
+    /\ generalSessionStates[sessionId] = "confirmed"
+    /\ chainSessionStates[srcChain, sessionId] = "processing"
+    /\ [sessionId |-> sessionId, type |-> "Decided", value |-> TRUE] \in msgs
+    /\ LET ackMsg == inbox[senderBridge, destChain, srcChain, receiver, sender, sessionId, "ACK SEND"]
+           remaining == chainSessionRoles[srcChain, sessionId] - 1
+       IN /\ ackMsg # Empty 
+          /\ ackMsg.consumed = FALSE   
+          /\ inbox' = [inbox EXCEPT ![senderBridge, destChain, srcChain, receiver, sender, sessionId, 
+                        "ACK SEND"] = [ackMsg EXCEPT !.consumed = TRUE]]
+          /\ chainSessionRoles' = [chainSessionRoles EXCEPT ![srcChain, sessionId] = remaining]
+          /\ chainSessionStates' = IF remaining = 0
+                                   THEN [chainSessionStates EXCEPT ![srcChain, sessionId] = "confirmed"]
+                                   ELSE chainSessionStates
+    /\ UNCHANGED <<initialBalances, outbox, accountBalances, chainSessionMembers,
+                   generalSessionStates, bridgesTokenBalances, msgs, spClock, chainClock>>
+
+SendAbort(srcChain, destChain, sender, receiver, sessionId, senderBridge, destBridge) ==
+    /\ srcChain # destChain
+    /\ senderBridge # destBridge
+    /\ sender = receiver
+    /\ chainSessionRoles[srcChain, sessionId] > 0
+    /\ generalSessionStates[sessionId] = "aborted"
+    /\ chainSessionStates[srcChain, sessionId] = "processing"
+    /\ [sessionId |-> sessionId, type |-> "Decided", value |-> FALSE] \in msgs
+    /\ LET sentMsg == outbox[senderBridge, srcChain, destChain, sender, receiver, sessionId, "SEND"]
+           remaining == chainSessionRoles[srcChain, sessionId] - 1
+       IN /\ sentMsg # Empty          
+          /\ accountBalances' = [accountBalances EXCEPT ![srcChain, sender] = @ + sentMsg.amount]
+          /\ outbox' = [outbox EXCEPT ![senderBridge, srcChain, destChain, sender, receiver, sessionId, 
+                        "SEND"] = Empty]
+          /\ inbox' = [inbox EXCEPT ![senderBridge, destChain, srcChain, receiver, sender, sessionId, 
+                        "ACK SEND"] = Empty]                  
+          /\ chainSessionRoles' = [chainSessionRoles EXCEPT ![srcChain, sessionId] = remaining]
+          /\ chainSessionStates' = IF remaining = 0
+                                   THEN [chainSessionStates EXCEPT ![srcChain, sessionId] = "aborted"]
+                                   ELSE chainSessionStates
+    /\ UNCHANGED <<initialBalances, generalSessionStates, chainSessionMembers, bridgesTokenBalances, 
+                    msgs, spClock, chainClock>>
+
+RecvConfirm(srcChain, destChain, sender, receiver, sessionId, senderBridge, destBridge) ==
+    /\ srcChain # destChain
+    /\ senderBridge # destBridge
+    /\ sender = receiver
+    /\ chainSessionRoles[destChain, sessionId] > 0
+    /\ generalSessionStates[sessionId] = "confirmed"
+    /\ chainSessionStates[destChain, sessionId] = "processing"
+    /\ [sessionId |-> sessionId, type |-> "Decided", value |-> TRUE] \in msgs
+    /\ LET recvdMsg == inbox[destBridge, srcChain, destChain, sender, receiver,sessionId, "SEND"]
+           remaining == chainSessionRoles[destChain, sessionId] - 1
+       IN  /\ recvdMsg # Empty
+           /\ bridgesTokenBalances[destBridge, recvdMsg.token] >= recvdMsg.amount
+           /\ accountBalances'     = [accountBalances 
+                                     EXCEPT ![destChain, receiver] = @ + recvdMsg.amount]
+           /\ bridgesTokenBalances' = [bridgesTokenBalances 
+                                     EXCEPT ![destBridge, recvdMsg.token] = @ - recvdMsg.amount]
+           /\ chainSessionRoles' = [chainSessionRoles EXCEPT ![destChain, sessionId] = remaining]
+           /\ chainSessionStates' = IF remaining = 0
+                              THEN [chainSessionStates EXCEPT ![destChain, sessionId] = "confirmed"]
+                              ELSE chainSessionStates
+     /\ UNCHANGED <<initialBalances, inbox, outbox, chainSessionMembers, generalSessionStates, 
+                    msgs, spClock, chainClock>>
+
+RecvAbort(srcChain, destChain, sender, receiver, sessionId, senderBridge, destBridge) ==
+    /\ srcChain # destChain
+    /\ senderBridge # destBridge
+    /\ sender = receiver
+    /\ chainSessionRoles[destChain, sessionId] > 0
+    /\ generalSessionStates[sessionId] = "aborted"
+    /\ chainSessionStates[destChain, sessionId] = "processing"
+    /\ [sessionId |-> sessionId, type |-> "Decided", value |-> FALSE] \in msgs
+    /\ LET recvdMsg == inbox[destBridge, srcChain, destChain,sender, receiver, sessionId, "SEND"]
+           remaining == chainSessionRoles[destChain, sessionId] - 1
+       IN  /\ recvdMsg # Empty          
+           /\ bridgesTokenBalances[destBridge, recvdMsg.token] >= recvdMsg.amount
+           /\ bridgesTokenBalances' = [bridgesTokenBalances EXCEPT ![destBridge, recvdMsg.token] 
+                                       = @ - recvdMsg.amount]
+           /\ outbox' = [outbox EXCEPT ![destBridge, destChain, srcChain, receiver, sender, sessionId,
+                                         "ACK SEND"] = Empty]
+           /\ inbox'  = [inbox EXCEPT ![destBridge, srcChain, destChain, sender, receiver, sessionId, 
+                                             "SEND"] = Empty]
+           /\ chainSessionRoles' = [chainSessionRoles EXCEPT ![destChain, sessionId] = remaining]
+           /\ chainSessionStates' = IF remaining = 0
+                                    THEN [chainSessionStates EXCEPT ![destChain, sessionId] = "aborted"]
+                                    ELSE chainSessionStates
+    /\ UNCHANGED <<initialBalances, accountBalances, chainSessionMembers, generalSessionStates,
+                     msgs, spClock, chainClock>>
+
+(*************************************************************************)
+(* Invariants                                                            *)
+(*************************************************************************)
+
+2PConsistent ==
+    \A chainA, chainB \in CHAINS : \A s \in SESSIONS :
+        ~ /\ chainSessionStates[chainA, s] = "aborted"
+          /\ chainSessionStates[chainB, s] = "confirmed"
+
+NoStrandedTokens ==
+    \A s \in SESSIONS :
+        \A b \in BRIDGES:
+        \A t \in TOKENS :
+            ((generalSessionStates[s] = "aborted" \/
+              generalSessionStates[s] = "confirmed")
+            /\
+            (\A chain \in CHAINS :
+                chainSessionStates[chain, s] = "aborted" \/
+                chainSessionStates[chain, s] = "confirmed"))
+            => bridgesTokenBalances[b, t] = 0
+            
+CleanupDone(s) ==
+    \A chain \in ChainsInvolvedInSession(s) :
+        chainSessionStates[chain, s] = "aborted"
+
+CleanupEventuallyHappens ==
+    \A s \in SESSIONS :
+        generalSessionStates[s] = "aborted" ~> CleanupDone(s)
+
+ConfirmRequiresConsensus ==
+    \A s \in SESSIONS :
+        generalSessionStates[s] = "confirmed" => AllVotedConfirm(s)
+
+AbortRequiresDissent ==
+    \A s \in SESSIONS :
+        generalSessionStates[s] = "aborted" => \/ OneVotedAbort(s) 
+                                               \/ spClock[s] = TIMEOUT
+        
+ConsumedMessagesNotReprocessed ==
+    \A b \in BRIDGES, sc, dc \in CHAINS, u, v \in USERS, 
+       s \in SESSIONS, l \in LABEL :
+        LET msg == inbox[b, sc, dc, u, v, s, l]
+        IN msg # Empty /\ msg.consumed = TRUE =>
+            generalSessionStates[s] # "unprocessed"
+            
+SessionDone(s) ==
+    /\ generalSessionStates[s] = "confirmed"
+    /\ \A c \in ChainsInvolvedInSession(s) :
+          chainSessionStates[c, s] = "confirmed"
+
+BalancePostcondition(s) ==
+    \A sc, dc \in CHAINS, u, v \in USERS, sb, db \in BRIDGES :
+        LET sentMsg == outbox[sb, sc, dc, u, v, s, "SEND"]
+        IN sentMsg # Empty =>
+             accountBalances[dc, v] >= initialBalances[s][dc, v] + sentMsg.amount
+
+            
+(*************************************************************************)
+(* CORRECT: verificar que saiu de uma chain e foi para a outra corretamente  (guardar estado antes e depois)     *)
+(*************************************************************************)
+
+MoneyArrivedWhenDone ==
+    \A s \in SESSIONS :
+        SessionDone(s) => BalancePostcondition(s)
+        
+AbortRefundCorrect(s) ==
+    \A sc, dc \in CHAINS, u, v \in USERS, sb, db \in BRIDGES :
+        LET sentMsg == outbox[sb, sc, dc, u, v, s, "SEND"]
+        IN sentMsg = Empty \/
+           accountBalances[sc, u] <= initialBalances[s][sc, u]
+        
+(*************************************************************************)
+(* Fairness, Done, Next and Spec                                         *)
+(*************************************************************************)
+
+Fairness ==
+    /\ \A sc, dc \in CHAINS, u, v \in USERS, s \in SESSIONS, sb, db \in BRIDGES :
+          WF_vars(SendAbort(sc, dc, u, v, s, sb, db))
+    /\ \A sc, dc \in CHAINS, u, v \in USERS, s \in SESSIONS, sb, db \in BRIDGES :
+          WF_vars(RecvAbort(sc, dc, u, v, s, sb, db))
+    /\ \A sc, dc \in CHAINS, u, v \in USERS, s \in SESSIONS, sb, db \in BRIDGES :
+          WF_vars(SeqRelay(sc, dc, u, v, s, sb, db))
+    /\ \A sc, dc \in CHAINS, u, v \in USERS, s \in SESSIONS, sb, db \in BRIDGES :
+          WF_vars(SeqRelayAck(sc, dc, u, v, s, sb, db))
+    /\ \A sc, dc \in CHAINS, u, v \in USERS, s \in SESSIONS, sb, db \in BRIDGES :
+          WF_vars(SendConfirm(sc, dc, u, v, s, sb, db))
+    /\ \A sc, dc \in CHAINS, u, v \in USERS, s \in SESSIONS, sb, db \in BRIDGES :
+          WF_vars(RecvConfirm(sc, dc, u, v, s, sb, db))
+
+Done ==
+    /\ \A s \in SESSIONS :
+        generalSessionStates[s] = "aborted" \/ generalSessionStates[s] = "confirmed"
+    /\ \A chain \in CHAINS, s \in SESSIONS :
+        LET state == chainSessionStates[chain, s]
+        IN state = "aborted" \/ state = "confirmed" \/ state = "unprocessed"
+    /\ UNCHANGED vars
+
+Next ==
+    \* Clock ticks
+    \/ \E s \in SESSIONS : SPTick(s)
+    \/ \E chain \in CHAINS, s \in SESSIONS : ChainTick(chain, s)
+    \* Timeouts
+    \/ \E s \in SESSIONS : SPTimeout(s)
+    \/ \E chain \in CHAINS, s \in SESSIONS : ChainTimeout(chain, s)
+    \/ \E chain \in CHAINS, s \in SESSIONS : ChainSkipAbort(chain, s)
+    \* Simulation phase
+    \/ \E sc, dc \in CHAINS, u, v \in USERS, t \in TOKENS,
+          a \in 0..MAX_AMOUNT, s \in SESSIONS, sb, db \in BRIDGES :
+        Send(sc, dc, u, v, t, a, s, sb, db)
+    \/ \E sc, dc \in CHAINS, u, v \in USERS,
+          s \in SESSIONS, sb, db \in BRIDGES :
+        SeqRelay(sc, dc, u, v, s, sb, db)
+    \/ \E sc, dc \in CHAINS, u, v \in USERS,
+          s \in SESSIONS, sb, db \in BRIDGES :
+        SeqRelayAck(sc, dc, u, v, s, sb, db)
+    \/ \E sc, dc \in CHAINS, u, v \in USERS, t \in TOKENS,
+          a \in 0..MAX_AMOUNT, s \in SESSIONS, sb, db \in BRIDGES :
+        Recv(sc, dc, u, v, t, a, s, sb, db)
+    \* 2PC voting phase
+    \/ \E chain \in CHAINS, s \in SESSIONS : ChainStart(chain, s)
+    \/ \E chain \in CHAINS, s \in SESSIONS, sb, db \in BRIDGES, sc, dc \in CHAINS, u, v \in USERS:
+                             ChainVoteConfirm(chain, s, sb, db, sc, dc, u, v)
+    \/ \E chain \in CHAINS, s \in SESSIONS : ChainVoteAbort(chain, s)
+    \* Shared publisher decision
+    \/ \E s \in SESSIONS : SPStartTransfer(s)
+    \/ \E s \in SESSIONS : SPDecideConfirm(s)
+    \/ \E s \in SESSIONS : SPDecideAbort(s)
+    \* Post-decision phase
+    \/ \E sc, dc \in CHAINS, u, v \in USERS, s \in SESSIONS, sb, db \in BRIDGES :
+        SendConfirm(sc, dc, u, v, s, sb, db)
+    \/ \E sc, dc \in CHAINS, u, v \in USERS, s \in SESSIONS, sb, db \in BRIDGES :
+        SendAbort(sc, dc, u, v, s, sb, db)
+    \/ \E sc, dc \in CHAINS, u, v \in USERS, s \in SESSIONS, sb, db \in BRIDGES :
+        RecvConfirm(sc, dc, u, v, s, sb, db)
+    \/ \E sc, dc \in CHAINS, u, v \in USERS, s \in SESSIONS, sb, db \in BRIDGES :
+        RecvAbort(sc, dc, u, v, s, sb, db)
+    \/ Done
+
+Spec == TPInit /\ [][Next]_vars /\ Fairness
+
+=============================================================================
