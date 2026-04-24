@@ -36,7 +36,6 @@ The system that will interact with this smart contract consists of the following
 |-----------------|:----------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
 | Compensability  | All unconfirmed bridging processes can be aborted, resulting in a compensating action that aims to cancel the actions performed by the previously executed transaction |
 | Observability   |                                All executed bridge functions emit events that can be observed by any component of the ethereum network                                 |
-| Immutability    |          Once a bridging process is confirmed/aborted, the resulting data of the executed actions cannot be changed as it is now part of the ethereum network          |
 | Serializability |                             Executing interleaved bridging processes produces the same result as executing bridging processes sequentially                             |
 | Atomicity       |        Each bridging process has an atomic final outcome: it is either fully confirmed or fully compensated (aborted), never partially committed at completion.        |
 | Auditability    |                                           All intermediate steps are traceable and attributable, leaving a verifiable trail                                            |
@@ -61,19 +60,27 @@ sequenceDiagram
     participant SP as Shared Publisher
     
     User ->> BA: Send()
+    BA ->> BA: Burn(senderAccount, amount)
     BA ->> MA: Write("SEND")
-    BA->>SB:emit DataWritten(data);
+    BA->>SA:emit DataWritten(data);
+    SA->>SB: emit DataWritten via network
     SB ->> MR: PutInbox("SEND")
+    SA ->> SP: Vote(True)
     User ->> BR: Recv()
     BR->>MR: Read()
     MR-->>BR: inbox received  SEND msg
+    BR ->> MR: mark message consumed
+    BR ->> BR: Mint(bridgeAccount, amount)
     BR->>MR: Write("ACK SEND")
-    BR->>SA:emit TokensReceived(token, amount)
+    BR->>SB:emit TokensReceived(token, amount)
+    SB->>SA: emit TokensReceived via network
     SA->>MA: PutInbox("ACK SEND")
+    SB->>SP: Vote(True)
     SP ->> SA: Decided(true)
     SP ->> SB: Decided(true)
     SA ->> BA:  sendConfirm()
     SB ->> BR:  recvConfirm()
+    BR ->> BR: Transfer(receiverAccount, amount)
     BA ->> MA: Read()
     MA -->> BA: inbox received ACK SEND message
     BA ->> MA: mark message consumed
@@ -93,18 +100,19 @@ sequenceDiagram
     participant SP as Shared Publisher
     
     User ->> BA: Send()
+    BA ->> BA: Burn(senderAccount, amount)
     BA ->> MA: Write("SEND")
-    BA->>SB:emit DataWritten(data);
-    SB ->> MR: PutInbox("SEND")
+    BA->>SA:emit DataWritten(data);
+    SA->>SB: emit DataWritten via network
+    SA ->> SP: Vote(True)
     User ->> BR: Recv()
     BR->>MR: Read()
-    MR-->>BR: inbox received  SEND msg
-    BR->>MR: Write("ACK SEND")
-    BR->>SA:emit TokensReceived(token, amount)
-    SA->>MA: PutInbox("ACK SEND")
+    MR-->>BR: inbox did not receive SEND msg
+    SB->>SP: Timeout, Vote(false)
     SP ->> SA: Decided(false)
     SP ->> SB: Decided(false)
     SA ->> BA:  sendAbort()
+    BA ->> BA: Mint(senderAccount, amount)
     SA ->> MA:  unwrite("SEND")
     SA ->> MA:  removeInbox("ACK SEND")
     SB ->> BR:  recvAbort()
