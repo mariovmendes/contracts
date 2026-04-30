@@ -235,9 +235,9 @@ SeqRelayAck(srcChain, destChain, sender, receiver, sessionId, senderBridge, dest
     /\ sender = receiver
     /\ generalSessionStates[sessionId] = "processing"
     /\ outbox[destBridge, destChain, srcChain,
-               sender, receiver, sessionId, "ACK SEND"] # Empty
+               receiver, sender, sessionId, "ACK SEND"] # Empty
     /\ inbox[senderBridge, destChain, srcChain,
-              sender, receiver, sessionId, "ACK SEND"] = Empty
+              receiver, sender, sessionId, "ACK SEND"] = Empty
     /\ LET msg == outbox[destBridge, destChain, srcChain,
                           receiver, sender, sessionId, "ACK SEND"]
        IN inbox' = [inbox EXCEPT

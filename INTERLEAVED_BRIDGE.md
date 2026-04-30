@@ -22,24 +22,23 @@ This implementation aims to achieve the following objectives:
 - [ ] Allow sequencers (and only these) to abort incorrect / confirm correct bridging processes
 - [ ] Minting, burning and transfer of tokens by multiple steps of a bridging process must not leave user accounts inconsistent for the next bridging processes
 - [ ] Ensure that multiple bridging processes producing messages does not leave mailboxes in an inconsistent state
+- [ ] Increase the amount of bridging processes executed in a defined amount of time to be greater than a serial execution
 
 ## System Model
 The system that will interact with this smart contract consists of the following components:
 
 - Users: these are clients that want to transfer tokens from one chain to another, making use of functions `send` and `recv`.
 - Sequencers: also known as coordinators, are responsible for confirming/aborting the execution of bridging processes between chains. These components make use of functions `recvConfirm`, `recvAbort`, `sendConfirm`, and `sendAbort`.
-- Shared Publisher: the main entity responsible for coordinating sequencers when executing bridging processes. This component informs sequencers whether to confirm/abort the inclusion of briding processes.
+- Shared Publisher: the main entity, assumed as a trustable, responsible for coordinating sequencers when executing bridging processes. This component informs sequencers whether to confirm/abort the inclusion of bridging processes.
 
 ## Properties
 
 | Property        |                                                                              Description                                                                               |
 |-----------------|:----------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
 | Compensability  | All unconfirmed bridging processes can be aborted, resulting in a compensating action that aims to cancel the actions performed by the previously executed transaction |
-| Observability   |                                All executed bridge functions emit events that can be observed by any component of the ethereum network                                 |
+| Observability   |                All executed bridge functions emit events that can be observed by any component of the ethereum network, resulting in a verifiable trail                |
 | Serializability |                             Executing interleaved bridging processes produces the same result as executing bridging processes sequentially                             |
 | Atomicity       |        Each bridging process has an atomic final outcome: it is either fully confirmed or fully compensated (aborted), never partially committed at completion.        |
-| Auditability    |                                           All intermediate steps are traceable and attributable, leaving a verifiable trail                                            |
-| Throughput      |                                The amount of bridging processes executed in a defined amount of time is greater than a serial execution                                |
 | Termination     |                                    Every initiated bridging process eventually reaches a terminal decision (confirmed or aborted).                                     |
 
 
@@ -244,7 +243,8 @@ Procedure RecvAbort(otherChainId, sender, receiver, sessionId, srcBridge):
     if readSender != sender:
         fail SenderMismatch
 
-    // No burn/mint/transfer in current implementation; only emits event
+    call token.burn(bridge, amount)
+    
     emit TokensReturned(token, amount)
 
 Procedure CheckAck(chainDest, destBridge, sessionId) returns ack:
@@ -319,6 +319,15 @@ Guards:
 Procedure Constructor(_coordinator):
     COORDINATOR ← _coordinator
 
+ /// Creates and returns a unique key for a message based on its details.
+ /// This key is a hash of all the message parts, used to store and find messages.
+ /// @param chainMessageSender The ID of the chain sending the message.
+ /// @param chainMessageRecipient The ID of the chain receiving the message.
+ /// @param sender The address sending the message.
+ /// @param receiver The address receiving the message.
+ /// @param sessionId A unique number for the session.
+ /// @param label A tag to tell different actions apart in the same session.
+ /// @return key The unique hash key for the message.
 Procedure GetKey(chainMessageSender, chainMessageRecipient, sender, receiver, sessionId, label) returns key:
     key ← keccak256(
         encodePacked(
@@ -332,6 +341,13 @@ Procedure GetKey(chainMessageSender, chainMessageRecipient, sender, receiver, se
     )
     return key
 
+ /// Reads a message from the inbox.
+ /// Anyone can read messages. Function checks if the message exists and throws if it does not.
+ /// @param chainMessageSender The ID of the chain that sent the message.
+ /// @param sender The address that sent the message.
+ /// @param sessionId The session number.
+ /// @param label The tag for the action.
+ /// @return message The data of the message.
 Procedure Read(chainMessageSender, sender, sessionId, label) returns message:
     key ← GetKey(
         chainMessageSender,
@@ -347,6 +363,13 @@ Procedure Read(chainMessageSender, sender, sessionId, label) returns message:
 
     return inbox[key]
 
+/// Writes a message to the outbox to send to another chain.
+/// Any contract can write to the outbox. It creates a key, stores the data, and updates the outbox root.
+/// @param chainMessageRecipient The ID of the chain receiving the message.
+/// @param receiver The address that will receive the message.
+/// @param sessionId The session number.
+/// @param label The tag for the action.
+/// @param data The message data to send.
 Procedure Write(chainMessageRecipient, receiver, sessionId, label, data):
     key ← GetKey(
         currentChainId,
@@ -372,6 +395,14 @@ Procedure Write(chainMessageRecipient, receiver, sessionId, label, data):
 
     emit NewOutboxKey(lastIndex(messageHeaderListOutbox), key)
 
+
+/// Removes a previously written message from the outbox.
+/// Executed by the coordinator. Marks the key as unused, removes the data and updates the outbox root.
+/// @param chainMessageRecipient The ID of the chain receiving the message.
+/// @param receiver The address that will receive the message.
+/// @param sessionId The session number.
+/// @param label The tag for the action.
+/// @param data The message data to send.
 Procedure Unwrite(chainMessageRecipient, sender, receiver, sessionId, label, data):
     onlyCoordinator()
 
@@ -419,6 +450,14 @@ Procedure Unwrite(chainMessageRecipient, sender, receiver, sessionId, label, dat
 
     emit DeletedOutboxMessage(key)
 
+/// Adds a message to the inbox. Only the coordinator can do this.
+/// This is for incoming messages from other chains. It updates the inbox root.
+/// @param chainMessageSender The ID of the chain that sent the message.
+/// @param sender The address that sent it.
+/// @param receiver The address receiving it.
+/// @param sessionId The session number.
+/// @param label The tag for the action.
+/// @param data The message data.
 Procedure PutInbox(chainMessageSender, sender, receiver, sessionId, label, data):
     onlyCoordinator()
 
@@ -446,6 +485,14 @@ Procedure PutInbox(chainMessageSender, sender, receiver, sessionId, label, data)
 
     emit NewInboxKey(lastIndex(messageHeaderListInbox), key)
 
+/// Removes a message to the inbox. Only the coordinator can do this.
+/// This is for incoming messages from other chains. It updates the inbox root.
+/// @param chainMessageSender The ID of the chain that sent the message.
+/// @param sender The address that sent it.
+/// @param receiver The address receiving it.
+/// @param sessionId The session number.
+/// @param label The tag for the action.
+/// @param data The message data.
 Procedure RemoveInbox(chainMessageSender, sender, receiver, sessionId, label, data):
     onlyCoordinator()
 
@@ -458,7 +505,8 @@ Procedure RemoveInbox(chainMessageSender, sender, receiver, sessionId, label, da
         label
     )
 
-    if inbox[key] is empty AND createdKeys[key] == false:
+    if inbox[key] is empty AND createdKeys[key] == false
+            AND hash(inbox[key]) != hash(data):
         fail MessageNotFound
 
     delete inbox[key]

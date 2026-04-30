@@ -165,7 +165,7 @@ contract Mailbox is IMailbox {
     }
 
     /// @notice Removes a previously written message from the outbox.
-    /// @dev Executed by the bridge. Marks the key as unused, removes the data and updates the outbox root.
+    /// @dev Executed by the coordinator. Marks the key as unused, removes the data and updates the outbox root.
     /// @param chainMessageRecipient The ID of the chain receiving the message.
     /// @param receiver The address that will receive the message.
     /// @param sessionId The session number.
@@ -269,6 +269,14 @@ contract Mailbox is IMailbox {
         emit NewInboxKey(messageHeaderListInbox.length - 1, key);
     }
 
+    /// @notice Removes a message to the inbox. Only the coordinator can do this.
+    /// @dev This is for incoming messages from other chains. It updates the inbox root.
+    /// @param chainMessageSender The ID of the chain that sent the message.
+    /// @param sender The address that sent it.
+    /// @param receiver The address receiving it.
+    /// @param sessionId The session number.
+    /// @param label The tag for the action.
+    /// @param data The message data.
     function removeInbox(
         uint256 chainMessageSender,
         address sender,
