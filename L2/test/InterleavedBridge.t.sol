@@ -435,7 +435,6 @@ contract BridgeTest is Setup {
         //bytes memory message = abi.encode("OK");
         //mailbox.unwrite(otherChain,address(bridge), mockSrcBridge, 1, "ACK SEND", message);
 
-        // TODO: REMOVE INBOX MISSING.
         mailbox.removeInbox(otherChain, // source chain id
         mockSrcBridge, // sender address is source bridge
         address(bridge), // receiver address

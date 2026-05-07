@@ -68,6 +68,19 @@ interface IMailbox {
         bytes calldata label
     ) external view returns (bytes memory message);
 
+    /// @notice Marks a message from the inbox as consumed.
+    /// @dev This function sets a message to a consumed state to ensure that recv cannot be done twice
+    /// @param chainMessageSender The ID of the chain that sent the message.
+    /// @param sender The address that sent the message.
+    /// @param sessionId The session number.
+    /// @param label The tag for the action.
+    function markConsumed(
+        uint256 chainMessageSender,
+        address sender,
+        uint256 sessionId,
+        bytes calldata label
+    ) external;
+
     /// @notice Function to write a message to the outbox.
     /// @param chainDest Destination chain ID.
     /// @param receiver Receiver's address.

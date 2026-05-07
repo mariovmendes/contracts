@@ -19,6 +19,12 @@ interface IBridge {
     /// @notice Error thrown when there is no message from the source chain.
     error EmptySourceChainMessage();
 
+    /// @notice Error when trying to read a message that has already been consumed.
+    error MessageAlreadyConsumed();
+
+    /// @notice Errow when confirming/aborting a transaction with a message that has not been processed
+    error MessageNotConsumed();
+
     /// @notice Error thrown when the sender in the message does not match the expected sender.
     error SenderMismatch();
 
@@ -44,7 +50,6 @@ interface IBridge {
     /// @param amount The amount of tokens delivered.
     event TokensDelivered(address token, uint256 amount);
 
-
     /// @notice Prepares the sending of tokens from the current chain to another chain by burning them and sending a message.
     /// @dev The caller must be the tokens sender. Tokens are burned, and a message is emitted for the destination bridge to process.
     /// @param otherChainId The ID of the destination blockchain.
@@ -55,6 +60,25 @@ interface IBridge {
     /// @param sessionId A unique ID for this transaction session.
     /// @param destBridge The address of the Bridge contract on the destination chain.
     function send(
+        uint256 otherChainId,
+        address token,
+        address sender,
+        address receiver,
+        uint256 amount,
+        uint256 sessionId,
+        address destBridge
+    ) external;
+
+    /// @notice Confirms that the tokens were sent by consuming the ack message received from the destBridge
+    /// @dev The ack message is consumed, and an event is transmitted to the network
+    /// @param otherChainId The ID of the destination blockchain.
+    /// @param token The address of the token being transferred.
+    /// @param sender The address sending the tokens (must be the caller).
+    /// @param receiver The address that will receive the tokens on the destination chain.
+    /// @param amount The number of tokens to transfer.
+    /// @param sessionId A unique ID for this transaction session.
+    /// @param destBridge The address of the Bridge contract on the destination chain.
+    function sendConfirm(
         uint256 otherChainId,
         address token,
         address sender,

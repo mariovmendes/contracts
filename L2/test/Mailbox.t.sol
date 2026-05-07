@@ -88,7 +88,9 @@ contract MailboxTest is Setup {
         vm.stopPrank();
 
         key = mailbox.getKey(otherChain, thisChain, messageSender, messageReceiver, 1, "SWAP");
-        assertEq(mailbox.inbox(key), "salut", "The message should match");
+        (bytes memory data, bool consumed) = abi.decode(mailbox.inbox(key), (bytes, bool));
+        assertFalse(consumed);
+        assertEq(data, "salut", "The message should match");
         assertTrue(mailbox.createdKeys(key), "Key should be created");
 
         (
@@ -168,8 +170,12 @@ contract MailboxTest is Setup {
             2,
             "SWAP"
         );
-        assertEq(mailbox.inbox(key1), "salut", "First message should remain");
-        assertEq(mailbox.inbox(key2), "salut2", "Second message should match");
+
+        (bytes memory data1, bool consumed1) = abi.decode(mailbox.inbox(key1), (bytes, bool));
+        (bytes memory data2, bool consumed2) = abi.decode(mailbox.inbox(key2), (bytes, bool));
+        assertFalse(consumed2);
+        assertEq(data1, "salut", "First message should remain");
+        assertEq(data2, "salut2", "Second message should match");
 
         bytes32 root1 = bytes32(0) ^ keccak256(abi.encode(key1, "salut"));
         bytes32 expectedRoot2 = root1 ^ keccak256(abi.encode( key2, "salut2"));
@@ -184,12 +190,12 @@ contract MailboxTest is Setup {
     function testRead() public {
         testWriteInboxSingle();
         vm.prank(messageReceiver);
-        bytes memory data = mailbox.read(
-            otherChain,
-            messageSender,
-            1,
-            "SWAP"
-        );
+        (bytes memory data, bool consumed) = abi.decode(mailbox.read(
+        otherChain,
+        messageSender,
+        1,
+        "SWAP"
+        ), (bytes, bool));
         assertEq(data, "salut", "Should match the read message");
     }
 
@@ -198,12 +204,12 @@ contract MailboxTest is Setup {
         vm.prank(COORDINATOR);
         mailbox.putInbox(otherChain, messageSender, messageReceiver, 1, "SWAP", "");
         vm.prank(messageReceiver);
-        bytes memory data = mailbox.read(
+        (bytes memory data, bool consumed) = abi.decode(mailbox.read(
             otherChain,
             messageSender,
             1,
             "SWAP"
-        );
+        ), (bytes, bool));
         assertEq(data, "", "Should return empty message");
     }
 

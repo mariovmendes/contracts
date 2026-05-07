@@ -68,6 +68,52 @@ contract Bridge is IBridge {
         emit DataWritten(data);
     }
 
+    /// @notice Confirms that the tokens were sent by consuming the ack message received from the destBridge
+    /// @dev The ack message is consumed, and an event is transmitted to the network
+    /// @param otherChainId The ID of the destination blockchain.
+    /// @param token The address of the token being transferred.
+    /// @param sender The address sending the tokens (must be the caller).
+    /// @param receiver The address that will receive the tokens on the destination chain.
+    /// @param amount The number of tokens to transfer.
+    /// @param sessionId A unique ID for this transaction session.
+    /// @param destBridge The address of the Bridge contract on the destination chain.
+    function sendConfirm(
+        uint256 otherChainId,
+        address token,
+        address sender,
+        address receiver,
+        uint256 amount,
+        uint256 sessionId,
+        address destBridge
+    ) external {
+        bytes memory message = mailbox.read(
+            otherChainId,
+            destBridge,
+            sessionId,
+            "ACK SEND"
+        );
+
+        if (message.length == 0) {
+            revert EmptySourceChainMessage();
+        }
+
+        (bytes memory data, bool read) = abi.decode(
+            message, (bytes, bool)
+        );
+
+        if(read)
+            revert MessageAlreadyConsumed();
+
+        mailbox.markConsumed(
+            otherChainId,
+            destBridge,
+            sessionId,
+            "ACK SEND"
+        );
+
+        emit TokensDelivered(token, amount);
+    }
+
     /// @notice Aborts the sending of tokens from the current chain to another chain by returning amount tokens to the owner.
     /// @param token The address of the token being transferred.
     /// @param sender The address that will send the tokens to the destination chain.
@@ -119,17 +165,32 @@ contract Bridge is IBridge {
             revert EmptySourceChainMessage();
         }
 
+        (bytes memory data, bool read) = abi.decode(
+            message, (bytes, bool)
+        );
+
+        if(read)
+            revert MessageAlreadyConsumed();
+
+        mailbox.markConsumed(
+            otherChainId,
+            srcBridge,
+            sessionId,
+            "SEND"
+        );
+
         address readSender;
         address readReceiver;
 
         (readSender, readReceiver, token, amount) = abi.decode(
-            message,
+            data,
             (address, address, address, uint256)
         );
 
         if (readSender != sender) {
             revert SenderMismatch();
         }
+
         if (readReceiver != receiver) {
             revert ReceiverMismatch();
         }
@@ -139,7 +200,7 @@ contract Bridge is IBridge {
         message = abi.encode("OK");
         mailbox.write(otherChainId, srcBridge, sessionId, "ACK SEND", message);
 
-        emit TokensReceived(token, amount);
+        emit DataWritten(message);
 
         return (token, amount);
     }
@@ -162,13 +223,20 @@ contract Bridge is IBridge {
             revert EmptySourceChainMessage();
         }
 
+        (bytes memory data, bool read) = abi.decode(
+            message, (bytes, bool)
+        );
+
+        if(!read)
+            revert MessageNotConsumed();
+
         address readSender;
         address readReceiver;
         address token;
         uint256 amount;
 
         (readSender, readReceiver, token, amount) = abi.decode(
-            message,
+            data,
             (address, address, address, uint256)
         );
 
@@ -176,9 +244,12 @@ contract Bridge is IBridge {
             revert SenderMismatch();
         }
 
+        if(readReceiver != receiver)
+            revert ReceiverMismatch();
+
         IBridgeableToken(token).transfer(receiver, amount);
 
-        emit TokensDelivered(token, amount);
+        emit TokensReceived(token, amount);
     }
 
     /// @notice Aborts the receiving of tokens by burning the deposited tokens
@@ -206,19 +277,29 @@ contract Bridge is IBridge {
             revert EmptySourceChainMessage();
         }
 
+        (bytes memory data, bool read) = abi.decode(
+            message, (bytes, bool)
+        );
+
+        if(!read)
+            revert MessageNotConsumed();
+
         address readSender;
         address readReceiver;
         address token;
         uint256 amount;
 
         (readSender, readReceiver, token, amount) = abi.decode(
-            message,
+            data,
             (address, address, address, uint256)
         );
 
         if (readSender != sender) {
             revert SenderMismatch();
         }
+
+        if(readReceiver != receiver)
+            revert ReceiverMismatch();
 
         message = abi.encode("OK");
         mailbox.unwrite(otherChainId, srcBridge, sessionId, "ACK SEND", message);
@@ -238,6 +319,10 @@ contract Bridge is IBridge {
         address destBridge,
         uint256 sessionId
     ) external view returns (bytes memory) {
-        return mailbox.read(chainDest, destBridge, sessionId, "ACK SEND");
+        (bytes memory data, bool consumed) = abi.decode(
+            mailbox.read(chainDest, destBridge, sessionId, "ACK SEND"),
+            (bytes, bool)
+        );
+        return data;
     }
 }

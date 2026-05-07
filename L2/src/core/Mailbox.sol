@@ -119,6 +119,34 @@ contract Mailbox is IMailbox {
         return inbox[key];
     }
 
+    /// @notice Marks a message from the inbox as consumed.
+    /// @dev This function sets a message to a consumed state to ensure that recv cannot be done twice
+    /// @param chainMessageSender The ID of the chain that sent the message.
+    /// @param sender The address that sent the message.
+    /// @param sessionId The session number.
+    /// @param label The tag for the action.
+    function markConsumed(
+        uint256 chainMessageSender,
+        address sender,
+        uint256 sessionId,
+        bytes calldata label
+    ) external {
+        // add access control here (e.g., only receiver or only coordinator)
+        bytes32 key = getKey(
+            chainMessageSender,
+            block.chainid,
+            sender,
+            msg.sender,
+            sessionId,
+            label
+        );
+        (bytes memory data, bool consumed) = abi.decode(inbox[key], (bytes, bool));
+        if (!consumed) {
+            inbox[key] = abi.encode(data, true);
+        }
+    }
+
+
     /// @notice Writes a message to the outbox to send to another chain.
     /// @dev Any contract can write to the outbox. It creates a key, stores the data, and updates the outbox root.
     /// @param chainMessageRecipient The ID of the chain receiving the message.
@@ -252,7 +280,8 @@ contract Mailbox is IMailbox {
             sessionId,
             label
         );
-        inbox[key] = data;
+
+        inbox[key] = abi.encode(data, false);
         createdKeys[key] = true;
         messageHeaderListInbox.push(
             MessageHeader(chainMessageSender, block.chainid, sender, receiver, sessionId, label)
