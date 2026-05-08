@@ -121,6 +121,20 @@ interface IBridge {
         address srcBridge
     ) external returns (address token, uint256 amount);
 
+    /// @notice Confirms the receiving of tokens.
+    /// @param otherChainId The ID of the source chain.
+    /// @param sender The sender's address from the source chain.
+    /// @param receiver The receiver's address.
+    /// @param sessionId The session ID for tracking.
+    /// @param srcBridge The bridge address on the source chain.
+    function recvConfirm(
+        uint256 otherChainId,
+        address sender,
+        address receiver,
+        uint256 sessionId,
+        address srcBridge
+    ) external;
+
     /// @notice Aborts the receiving of tokens by burning the reserved tokens
     /// @dev The message must have been previously save.
     /// @param otherChainId The ID of the source blockchain.

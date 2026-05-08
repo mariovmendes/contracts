@@ -11,7 +11,7 @@ contract BridgeTest is Setup {
     uint256 internal otherChain = 2;
 
     /// @dev Tests sending tokens from chain A to chain B (burning tokens on chain A and putting a message to outbox)
-    function testSend() public {
+    function testSend() public { // TODO: Add sendConfirm and root verification
         vm.recordLogs();
         address mockDestBridge = address(0xDEADBEEF);
 
@@ -75,7 +75,7 @@ contract BridgeTest is Setup {
     }
 
     /// @dev Tests receiving tokens from a chain B on chain A (faking message from chain B, receiving tokens and sending OK status back)
-    function testReceiveTokens() public {
+    function testReceiveTokens() public { // TODO: Add root verification
         address mockSrcBridge = address(0xABCDEF);
         address sender = DEPLOYER; // original sender on source chain
         address receiver = COORDINATOR; //receiver on dest chain
@@ -111,8 +111,8 @@ contract BridgeTest is Setup {
         vm.prank(COORDINATOR);
 
         bridge.recvConfirm(otherChain, // source chain id (tokens incoming from chain B)
-        sender, // original sender of tokens
-        receiver, // receiver address
+            sender, // original sender of tokens
+            receiver, // receiver address
         1, // session ID
         mockSrcBridge // source bridge address
         );
@@ -351,6 +351,7 @@ contract BridgeTest is Setup {
         assertEq(myToken.balanceOf(DEPLOYER), 100, "Tokens should be returned");
         assertTrue(found,"Event should be generated for sequencer pickup");
         assertFalse(mailbox.createdKeys(key));
+        assertEq(mailbox.outboxRootPerChain(thisChain), bytes32(0), "Outbox root must be empty");
     }
 
     /// @dev Tests that only own address can be used to abort sending a message
@@ -484,6 +485,9 @@ contract BridgeTest is Setup {
             bytes(""),
             "ACK should be removed"
         );
+
+        assertEq(mailbox.inboxRootPerChain(thisChain), bytes32(0), "Inbox root must be empty");
+        assertEq(mailbox.outboxRootPerChain(thisChain), bytes32(0), "Outbox root must be empty");
     }
 
     /// @dev Tests that only own address can be used to abort receiving a message

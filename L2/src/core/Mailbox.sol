@@ -24,6 +24,14 @@ contract Mailbox is IMailbox {
     /// @notice List of chain IDs that have messages in the outbox.
     uint256[] public chainIDsOutbox;
 
+    /// @notice Single address allowed to call root-update helpers (typically the local Bridge contract).
+    /// @dev Set once by the coordinator. This prevents arbitrary callers (EOAs or other contracts)
+    ///      from toggling inbox/outbox roots while allowing the Bridge contract to call these helpers.
+    address public allowedUpdater;
+
+    /// @notice Emitted when the allowed updater address is set.
+    event UpdaterSet(address indexed updater);
+
     /// @notice Mapping from chain ID to the root hash of its inbox.
     /// @dev The root is updated each time a new message is added to the inbox for that chain.
     mapping(uint256 chainId => bytes32 inboxRoot) public inboxRootPerChain;
@@ -54,11 +62,27 @@ contract Mailbox is IMailbox {
         _;
     }
 
+    /// @notice Restricts calls to the configured updater (the Bridge contract for this chain).
+    modifier onlyAllowedUpdater() {
+        if (msg.sender != allowedUpdater) revert InvalidAllowedUpdater();
+        _;
+    }
+
     /// @notice Sets up the mailbox with the coordinator's address.
     /// @dev The coordinator is the only one who can add incoming messages.
     /// @param _coordinator The address of the trusted coordinator.
     constructor(address _coordinator) {
         COORDINATOR = _coordinator;
+    }
+
+    /// @notice Set the single allowed updater address (callable only by the coordinator).
+    /// @dev Can only be set once. Coordinator should set this to the Bridge contract address
+    ///      that will call `updateInboxRoot` / `updateOutboxRoot` on this mailbox.
+    /// @param _updater The address of the contract allowed to call root-update helpers.
+    function setAllowedUpdater(address _updater) external onlyCoordinator {
+        if (allowedUpdater != address(0)) revert AllowedUpdaterAlreadySet();
+        allowedUpdater = _updater;
+        emit UpdaterSet(_updater);
     }
 
     /// @notice Creates and returns a unique key for a message based on its details.
@@ -130,7 +154,7 @@ contract Mailbox is IMailbox {
         address sender,
         uint256 sessionId,
         bytes calldata label
-    ) external {
+    ) external onlyAllowedUpdater{
         // add access control here (e.g., only receiver or only coordinator)
         bytes32 key = getKey(
             chainMessageSender,
@@ -149,21 +173,21 @@ contract Mailbox is IMailbox {
 
     /// @notice Writes a message to the outbox to send to another chain.
     /// @dev Any contract can write to the outbox. It creates a key, stores the data, and updates the outbox root.
-    /// @param chainMessageRecipient The ID of the chain receiving the message.
-    /// @param receiver The address that will receive the message.
+    /// @param chainDestId The ID of the chain receiving the message.
+    /// @param receiver The bridge address that will receive the message.
     /// @param sessionId The session number.
     /// @param label The tag for the action.
     /// @param data The message data to send.
     function write(
-        uint256 chainMessageRecipient,
+        uint256 chainDestId,
         address receiver,
         uint256 sessionId,
         bytes calldata label,
         bytes calldata data
-    ) external {
+    ) external onlyAllowedUpdater{
         bytes32 key = getKey(
             block.chainid,
-            chainMessageRecipient,
+            chainDestId,
             msg.sender,
             receiver,
             sessionId,
@@ -174,7 +198,7 @@ contract Mailbox is IMailbox {
         messageHeaderListOutbox.push(
             MessageHeader(
                 block.chainid,
-                chainMessageRecipient,
+                chainDestId,
                 msg.sender,
                 receiver,
                 sessionId,
@@ -182,33 +206,26 @@ contract Mailbox is IMailbox {
             )
         );
 
-        if (outboxRootPerChain[chainMessageRecipient] == bytes32(0)) {
-            chainIDsOutbox.push(chainMessageRecipient);
-        }
-        outboxRootPerChain[chainMessageRecipient] ^= keccak256(
-            abi.encode(key, data)
-        );
-
         emit NewOutboxKey(messageHeaderListOutbox.length - 1, key);
     }
 
     /// @notice Removes a previously written message from the outbox.
     /// @dev Executed by the coordinator. Marks the key as unused, removes the data and updates the outbox root.
-    /// @param chainMessageRecipient The ID of the chain receiving the message.
+    /// @param chainDestId The ID of the chain receiving the message.
     /// @param receiver The address that will receive the message.
     /// @param sessionId The session number.
     /// @param label The tag for the action.
     /// @param data The message data to send.
     function unwrite(
-        uint256 chainMessageRecipient,
+        uint256 chainDestId,
         address receiver,
         uint256 sessionId,
         bytes calldata label,
         bytes calldata data
-    ) external {
+    ) external onlyAllowedUpdater{
         bytes32 key = getKey(
             block.chainid,
-            chainMessageRecipient,
+            chainDestId,
             msg.sender,
             receiver,
             sessionId,
@@ -222,11 +239,11 @@ contract Mailbox is IMailbox {
         delete outbox[key];
         createdKeys[key] = false;
 
-        // TODO: Does not maintain order, check if this is an issue!
+        // TODO: Does not maintain order, making this loop a performance issue.
         for(uint i = 0; i < messageHeaderListOutbox.length; i++) {
             if(_headerEquals(messageHeaderListOutbox[i],
                 block.chainid,
-                chainMessageRecipient,
+                chainDestId,
                 msg.sender,
                 receiver,
                 sessionId,
@@ -238,34 +255,19 @@ contract Mailbox is IMailbox {
             }
         }
 
-        outboxRootPerChain[chainMessageRecipient] ^= keccak256(
-            abi.encode(key, data)
-        );
-
-        // TODO: Does not maintain order, check if this is an issue!
-        if (outboxRootPerChain[chainMessageRecipient] == bytes32(0)) {
-            for(uint i = 0; i < chainIDsOutbox.length; i++) {
-                if(chainIDsOutbox[i] == chainMessageRecipient) {
-                    chainIDsOutbox[i] = chainIDsOutbox[chainIDsOutbox.length - 1];
-                    chainIDsOutbox.pop();
-                    break;
-                }
-            }
-        }
-
         emit DeletedOutboxMessage( key);
     }
 
     /// @notice Adds a message to the inbox. Only the coordinator can do this.
     /// @dev This is for incoming messages from other chains. It updates the inbox root.
-    /// @param chainMessageSender The ID of the chain that sent the message.
+    /// @param chainSenderId The ID of the chain that sent the message.
     /// @param sender The address that sent it.
     /// @param receiver The address receiving it.
     /// @param sessionId The session number.
     /// @param label The tag for the action.
     /// @param data The message data.
     function putInbox(
-        uint256 chainMessageSender,
+        uint256 chainSenderId,
         address sender,
         address receiver,
         uint256 sessionId,
@@ -273,7 +275,7 @@ contract Mailbox is IMailbox {
         bytes calldata data
     ) external onlyCoordinator {
         bytes32 key = getKey(
-            chainMessageSender,
+            chainSenderId,
             block.chainid,
             sender,
             receiver,
@@ -284,15 +286,7 @@ contract Mailbox is IMailbox {
         inbox[key] = abi.encode(data, false);
         createdKeys[key] = true;
         messageHeaderListInbox.push(
-            MessageHeader(chainMessageSender, block.chainid, sender, receiver, sessionId, label)
-        );
-
-        if (inboxRootPerChain[chainMessageSender] == bytes32(0)) {
-            chainIDsInbox.push(chainMessageSender);
-        }
-
-        inboxRootPerChain[chainMessageSender] ^= keccak256(
-            abi.encode(key, data)
+            MessageHeader(chainSenderId, block.chainid, sender, receiver, sessionId, label)
         );
 
         emit NewInboxKey(messageHeaderListInbox.length - 1, key);
@@ -300,14 +294,14 @@ contract Mailbox is IMailbox {
 
     /// @notice Removes a message to the inbox. Only the coordinator can do this.
     /// @dev This is for incoming messages from other chains. It updates the inbox root.
-    /// @param chainMessageSender The ID of the chain that sent the message.
+    /// @param chainSenderId The ID of the chain that sent the message.
     /// @param sender The address that sent it.
     /// @param receiver The address receiving it.
     /// @param sessionId The session number.
     /// @param label The tag for the action.
     /// @param data The message data.
     function removeInbox(
-        uint256 chainMessageSender,
+        uint256 chainSenderId,
         address sender,
         address receiver,
         uint256 sessionId,
@@ -315,7 +309,7 @@ contract Mailbox is IMailbox {
         bytes calldata data
     ) external onlyCoordinator{
         bytes32 key = getKey(
-            chainMessageSender,
+            chainSenderId,
             block.chainid,
             sender,
             receiver,
@@ -323,17 +317,20 @@ contract Mailbox is IMailbox {
             label
         );
 
-        if (inbox[key].length == 0 && !createdKeys[key] && keccak256(abi.encodePacked(inbox[key])) != keccak256(abi.encodePacked(data))) {
+        if (
+            inbox[key].length == 0 &&
+            !createdKeys[key] &&
+            keccak256(abi.encodePacked(inbox[key])) != keccak256(abi.encodePacked(data))) {
             revert MessageNotFound();
         }
 
         delete inbox[key];
         createdKeys[key] = false;
 
-        // TODO: Does not maintain order, check if this is an issue!
+        // TODO: Does not maintain order, making this loop a performance issue.
         for(uint i = 0; i < messageHeaderListInbox.length; i++) {
             if(_headerEquals(messageHeaderListInbox[i],
-                chainMessageSender,
+                chainSenderId,
                 block.chainid,
                 sender,
                 receiver,
@@ -346,22 +343,85 @@ contract Mailbox is IMailbox {
             }
         }
 
+        emit DeletedInboxMessage(key);
+    }
+
+    /**
+    * @notice Update the inbox root for a source chain entry.
+    * @param chainMessageSender Source chain id that originally emitted the message.
+    * @param sender Originating address on the source chain.
+    * @param sessionId Session identifier for the message/flow.
+    * @param label Opaque label/tag distinguishing the message type.
+    */
+    function updateInboxRoot(
+        uint256 chainMessageSender,
+        address sender,
+        uint256 sessionId,
+        bytes calldata label
+    ) external onlyAllowedUpdater {
+        bytes32 key = getKey(
+            chainMessageSender,
+            block.chainid,
+            sender,
+            msg.sender,
+            sessionId,
+            label
+        );
+
+        if(!createdKeys[key]){
+            revert MessageNotFound();
+        }
+
+        (bytes memory data,) = abi.decode(
+            inbox[key],
+            (bytes,bool)
+        );
+
+        if (inboxRootPerChain[chainMessageSender] == bytes32(0)) {
+            chainIDsInbox.push(chainMessageSender);
+        }
+
         inboxRootPerChain[chainMessageSender] ^= keccak256(
             abi.encode(key, data)
         );
+    }
 
-        // TODO: Does not maintain order, check if this is an issue!
-        if (inboxRootPerChain[chainMessageSender] == bytes32(0)) {
-            for(uint i = 0; i < chainIDsInbox.length; i++) {
-                if(chainIDsInbox[i] == chainMessageSender) {
-                    chainIDsInbox[i] = chainIDsInbox[chainIDsInbox.length - 1];
-                    chainIDsInbox.pop();
-                    break;
-                }
-            }
+    /**
+    * @notice Update the per-destination-chain outbox root for a single outbox entry.
+    * @dev This updates `outboxRootPerChain[chainMessageRecipient]` by XORing it with
+    *      keccak256(abi.encode(key, data)). If the previous root was the zero value,
+    *      the destination chain id is appended to `chainIDsOutbox`.
+    * @param chainMessageRecipient The destination chain ID whose outbox root is being updated.
+    * @param receiver The remote receiver address on `chainMessageRecipient`.
+    * @param sessionId Session identifier associated with the message.
+    * @param label Opaque label/tag that distinguishes the message type.
+    */
+    function updateOutboxRoot(
+        uint256 chainMessageRecipient,
+        address receiver,
+        uint256 sessionId,
+        bytes calldata label
+    ) external onlyAllowedUpdater {
+        bytes32 key = getKey(
+            block.chainid,
+            chainMessageRecipient,
+            msg.sender,
+            receiver,
+            sessionId,
+            label
+        );
+
+        if(!createdKeys[key]){
+            revert MessageNotFound();
         }
 
-        emit DeletedInboxMessage(key);
+        if (outboxRootPerChain[chainMessageRecipient] == bytes32(0)) {
+            chainIDsOutbox.push(chainMessageRecipient);
+        }
+
+        outboxRootPerChain[chainMessageRecipient] ^= keccak256(
+            abi.encode(key, outbox[key])
+        );
     }
 
     /// @dev Helper to compare a storage MessageHeader with provided fields.

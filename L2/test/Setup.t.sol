@@ -39,5 +39,8 @@ contract Setup is Test {
         vm.label(address(myToken), "MyToken");
         vm.label(address(bridge), "Bridge");
         vm.label(address(stagedMailbox), "StagedMailbox");
+
+        vm.prank(COORDINATOR);
+        mailbox.setAllowedUpdater(address(bridge));
     }
 }

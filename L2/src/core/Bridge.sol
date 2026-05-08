@@ -85,7 +85,7 @@ contract Bridge is IBridge {
         uint256 amount,
         uint256 sessionId,
         address destBridge
-    ) external {
+    ) external onlyCoordinator{
         bytes memory message = mailbox.read(
             otherChainId,
             destBridge,
@@ -110,6 +110,9 @@ contract Bridge is IBridge {
             sessionId,
             "ACK SEND"
         );
+
+        mailbox.updateOutboxRoot(otherChainId, destBridge, sessionId, "SEND");
+        mailbox.updateInboxRoot(otherChainId, destBridge, sessionId, "ACK SEND");
 
         emit TokensDelivered(token, amount);
     }
@@ -246,6 +249,9 @@ contract Bridge is IBridge {
 
         if(readReceiver != receiver)
             revert ReceiverMismatch();
+
+        mailbox.updateInboxRoot(otherChainId, srcBridge, sessionId, "SEND");
+        mailbox.updateOutboxRoot(otherChainId, srcBridge, sessionId, "ACK SEND");
 
         IBridgeableToken(token).transfer(receiver, amount);
 
