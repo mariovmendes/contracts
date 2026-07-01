@@ -28,6 +28,46 @@ fi
 TMP_OUTPUT=$(mktemp)
 
 # =============================================================================
+# Step 0/3: (mock mode only) Deploy MockVerifier and use it in place of
+# NETWORK_VERIFIER_ADDRESS. NEVER set MOCK_MODE=true against a network that
+# carries any real value — MockVerifier accepts any proof unconditionally.
+# =============================================================================
+if [ "${MOCK_MODE:-false}" = "true" ]; then
+    echo "========================================="
+    echo "Step 0/3: MOCK_MODE — deploying MockVerifier"
+    echo "========================================="
+    echo ""
+
+    forge script script/DeployMockVerifier.s.sol:DeployMockVerifier \
+        --rpc-url "$NETWORK_RPC_URL" \
+        --private-key "$DEPLOYER_PRIVATE_KEY" \
+        --broadcast \
+        2>&1 | tee "$TMP_OUTPUT"
+
+    MOCK_BROADCAST_DIR="broadcast/DeployMockVerifier.s.sol/$NETWORK_CHAIN_ID"
+    MOCK_BROADCAST_FILE=$(ls -t "$MOCK_BROADCAST_DIR"/run-*.json 2>/dev/null | head -1)
+
+    if [ -z "$MOCK_BROADCAST_FILE" ]; then
+        echo "Error: Could not find broadcast output for MockVerifier"
+        exit 1
+    fi
+
+    MOCK_VERIFIER_ADDRESS=$(jq -r '.transactions[] | select(.contractName == "MockVerifier") | .contractAddress' "$MOCK_BROADCAST_FILE" | head -1)
+
+    if [ -z "$MOCK_VERIFIER_ADDRESS" ] || [ "$MOCK_VERIFIER_ADDRESS" = "null" ]; then
+        echo "Error: Could not extract MockVerifier address"
+        exit 1
+    fi
+
+    echo ""
+    echo "✓ MockVerifier deployed at: $MOCK_VERIFIER_ADDRESS"
+    echo "  Overriding NETWORK_VERIFIER_ADDRESS ($NETWORK_VERIFIER_ADDRESS -> $MOCK_VERIFIER_ADDRESS)"
+    echo ""
+
+    NETWORK_VERIFIER_ADDRESS="$MOCK_VERIFIER_ADDRESS"
+fi
+
+# =============================================================================
 # Step 1: Deploy ComposeL2OutputOracle (Proxy + Implementation)
 # =============================================================================
 echo "========================================="
