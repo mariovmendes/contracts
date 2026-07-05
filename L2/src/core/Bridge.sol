@@ -18,15 +18,27 @@ contract Bridge is IBridge {
     /// @dev This is set in the constructor and cannot be changed later.
     IMailbox public immutable mailbox;
 
+    /// @notice The address of the coordinator that can add messages to the inbox.
+    /// @dev This is set once in the constructor and can't be changed.
+    address public immutable COORDINATOR;
+
+    /// @notice Modifier to restrict access to only the coordinator.
+    /// @dev Reverts if the caller is not the coordinator.
+    modifier onlyCoordinator() {
+        if (msg.sender != COORDINATOR) revert InvalidCoordinator();
+        _;
+    }
+
     /// @notice Initializes the bridge with a mailbox address.
     /// @dev Sets the mailbox interface for all cross-chain operations.
     /// @param _mailbox The address of the mailbox contract.
-    constructor(address _mailbox) {
+    constructor(address _mailbox, address _coordinator) {
         mailbox = IMailbox(_mailbox);
+        COORDINATOR = _coordinator;
     }
 
-    /// @notice Sends tokens from the current chain to another chain by burning them here and preparing a message.
-    /// @dev The caller must be the tokens sender. Tokens are burned, and a message is written to the mailbox for the destination bridge to process.
+    /// @notice Prepares the sending of tokens from the current chain to another chain by burning them and sending a message.
+    /// @dev The caller must be the tokens sender. Tokens are burned, and a message is emitted for the destination bridge to process.
     /// @param otherChainId The ID of the destination blockchain.
     /// @param token The address of the token being transferred.
     /// @param sender The address sending the tokens (must be the caller).
@@ -56,64 +68,254 @@ contract Bridge is IBridge {
         emit DataWritten(data);
     }
 
-    /// @notice Receives and processes tokens on the destination chain by minting them after reading the source message.
+    /// @notice Confirms that the tokens were sent by consuming the ack message received from the destBridge
+    /// @dev The ack message is consumed, and an event is transmitted to the network
+    /// @param otherChainId The ID of the destination blockchain.
+    /// @param token The address of the token being transferred.
+    /// @param sender The address sending the tokens (must be the caller).
+    /// @param receiver The address that will receive the tokens on the destination chain.
+    /// @param amount The number of tokens to transfer.
+    /// @param sessionId A unique ID for this transaction session.
+    /// @param destBridge The address of the Bridge contract on the destination chain.
+    function sendConfirm(
+        uint256 otherChainId,
+        address token,
+        address sender,
+        address receiver,
+        uint256 amount,
+        uint256 sessionId,
+        address destBridge
+    ) external onlyCoordinator{
+        bytes memory message = mailbox.read(
+            otherChainId,
+            destBridge,
+            sessionId,
+            "ACK SEND"
+        );
+
+        if (message.length == 0) {
+            revert EmptySourceChainMessage();
+        }
+
+        (bytes memory data, bool read) = abi.decode(
+            message, (bytes, bool)
+        );
+
+        if(read)
+            revert MessageAlreadyConsumed();
+
+        mailbox.markConsumed(
+            otherChainId,
+            destBridge,
+            sessionId,
+            "ACK SEND"
+        );
+
+        mailbox.updateOutboxRoot(otherChainId, destBridge, sessionId, "SEND");
+        mailbox.updateInboxRoot(otherChainId, destBridge, sessionId, "ACK SEND");
+
+        emit TokensDelivered(token, amount);
+    }
+
+    /// @notice Aborts the sending of tokens from the current chain to another chain by returning amount tokens to the owner.
+    /// @param token The address of the token being transferred.
+    /// @param sender The address that will send the tokens to the destination chain.
+    /// @param amount The number of tokens to transfer.
+    function sendAbort(
+        uint256 otherChainId,
+        address token,
+        address sender,
+        address receiver,
+        uint256 amount,
+        uint256 sessionId,
+        address destBridge
+    ) external onlyCoordinator {
+        IBridgeableToken(token).mint(sender, amount);
+
+        bytes memory data = abi.encode(sender, receiver, token, amount);
+
+        mailbox.unwrite(otherChainId, destBridge, sessionId, "SEND", data);
+
+        emit TokensReturned(token,amount);
+    }
+
+    /// @notice Receives and processes tokens on the destination chain by minting them after reading the source message and saving them to be delivered afterwards.
     /// @dev The caller must be the receiver. It checks the message, verifies sender and receiver, mints tokens, and sends an acknowledgment back.
     /// @param otherChainId The ID of the source blockchain.
     /// @param sender The address that sent the tokens from the source chain.
     /// @param receiver The address receiving the tokens (must be the caller).
     /// @param sessionId The unique ID for this transaction session.
     /// @param srcBridge The address of the Bridge contract on the source chain.
-    /// @return token The address of the token that was transferred.
-    /// @return amount The number of tokens transferred.
-    function receiveTokens(
+    function recv(
         uint256 otherChainId,
         address sender,
         address receiver,
         uint256 sessionId,
         address srcBridge
-    ) external returns (address token, uint256 amount) {
+    ) external returns (address token, uint256 amount){
         if (msg.sender != receiver) {
             revert Unauthorized();
         }
 
-        bytes memory m = mailbox.read(
+        bytes memory message = mailbox.read(
             otherChainId,
             srcBridge,
             sessionId,
             "SEND"
         );
 
-        if (m.length == 0) {
+        if (message.length == 0) {
             revert EmptySourceChainMessage();
         }
+
+        (bytes memory data, bool read) = abi.decode(
+            message, (bytes, bool)
+        );
+
+        if(read)
+            revert MessageAlreadyConsumed();
+
+        mailbox.markConsumed(
+            otherChainId,
+            srcBridge,
+            sessionId,
+            "SEND"
+        );
 
         address readSender;
         address readReceiver;
 
         (readSender, readReceiver, token, amount) = abi.decode(
-            m,
+            data,
             (address, address, address, uint256)
         );
 
         if (readSender != sender) {
             revert SenderMismatch();
         }
+
         if (readReceiver != receiver) {
             revert ReceiverMismatch();
         }
 
-        IBridgeableToken(token).mint(receiver, amount);
+        IBridgeableToken(token).mint(address(this), amount);
 
-        m = abi.encode("OK");
-        mailbox.write(otherChainId, srcBridge, sessionId, "ACK SEND", m);
+        message = abi.encode("OK");
+        mailbox.write(otherChainId, srcBridge, sessionId, "ACK SEND", message);
 
-        emit TokensReceived(token, amount);
+        emit DataWritten(message);
 
         return (token, amount);
     }
 
+    function recvConfirm(
+        uint256 otherChainId,
+        address sender,
+        address receiver,
+        uint256 sessionId,
+        address srcBridge
+    ) external onlyCoordinator {
+        bytes memory message = mailbox.read(
+            otherChainId,
+            srcBridge,
+            sessionId,
+            "SEND"
+        );
+
+        if (message.length == 0) {
+            revert EmptySourceChainMessage();
+        }
+
+        (bytes memory data, bool read) = abi.decode(
+            message, (bytes, bool)
+        );
+
+        if(!read)
+            revert MessageNotConsumed();
+
+        address readSender;
+        address readReceiver;
+        address token;
+        uint256 amount;
+
+        (readSender, readReceiver, token, amount) = abi.decode(
+            data,
+            (address, address, address, uint256)
+        );
+
+        if (readSender != sender) {
+            revert SenderMismatch();
+        }
+
+        if(readReceiver != receiver)
+            revert ReceiverMismatch();
+
+        mailbox.updateInboxRoot(otherChainId, srcBridge, sessionId, "SEND");
+        mailbox.updateOutboxRoot(otherChainId, srcBridge, sessionId, "ACK SEND");
+
+        IBridgeableToken(token).transfer(receiver, amount);
+
+        emit TokensReceived(token, amount);
+    }
+
+    /// @notice Aborts the receiving of tokens by burning the deposited tokens
+    /// @dev The message must have been previously save.
+    /// @param otherChainId The ID of the source blockchain.
+    /// @param sender The address that sent the tokens from the source chain.
+    /// @param receiver The address receiving the tokens (must be the caller).
+    /// @param sessionId The unique ID for this transaction session.
+    /// @param srcBridge The address of the Bridge contract on the source chain.
+    function recvAbort(
+        uint256 otherChainId,
+        address sender,
+        address receiver,
+        uint256 sessionId,
+        address srcBridge
+    ) external onlyCoordinator {
+        bytes memory message = mailbox.read(
+            otherChainId,
+            srcBridge,
+            sessionId,
+            "SEND"
+        );
+
+        if (message.length == 0) {
+            revert EmptySourceChainMessage();
+        }
+
+        (bytes memory data, bool read) = abi.decode(
+            message, (bytes, bool)
+        );
+
+        if(!read)
+            revert MessageNotConsumed();
+
+        address readSender;
+        address readReceiver;
+        address token;
+        uint256 amount;
+
+        (readSender, readReceiver, token, amount) = abi.decode(
+            data,
+            (address, address, address, uint256)
+        );
+
+        if (readSender != sender) {
+            revert SenderMismatch();
+        }
+
+        if(readReceiver != receiver)
+            revert ReceiverMismatch();
+
+        message = abi.encode("OK");
+        mailbox.unwrite(otherChainId, srcBridge, sessionId, "ACK SEND", message);
+        IBridgeableToken(token).burn(address(this), amount);
+
+        emit TokensReturned(token, amount);
+    }
+
     /// @notice Checks for an acknowledgment message from the destination chain.
-    /// @dev This is a view function to read the ACK without changing the state.
+    /// @dev This is a view function to read the ACK.
     /// @param chainDest The ID of the destination blockchain.
     /// @param destBridge The address of the Bridge contract on the destination chain.
     /// @param sessionId The unique ID for the transaction session.
@@ -123,7 +325,10 @@ contract Bridge is IBridge {
         address destBridge,
         uint256 sessionId
     ) external view returns (bytes memory) {
-        return
-            mailbox.read(chainDest, destBridge, sessionId, "ACK SEND");
+        (bytes memory data, bool consumed) = abi.decode(
+            mailbox.read(chainDest, destBridge, sessionId, "ACK SEND"),
+            (bytes, bool)
+        );
+        return data;
     }
 }

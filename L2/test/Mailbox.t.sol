@@ -36,6 +36,8 @@ contract MailboxTest is Setup {
 
     /// @dev Tests writing a single message to outbox
     function testWriteOutboxSingle() public returns (bytes32 key) {
+        // ensure the test uses the configured updater as the caller for outbox writes
+        messageSender = mailbox.allowedUpdater();
         vm.startPrank(messageSender);
 
         vm.expectEmit(true, true, false, true);
@@ -45,6 +47,10 @@ contract MailboxTest is Setup {
         );
         mailbox.write(otherChain, messageReceiver, 1, "SWAP", "hello");
         vm.stopPrank();
+
+        // updater must call updateOutboxRoot to apply the contribution
+        vm.prank(messageSender);
+        mailbox.updateOutboxRoot(otherChain, messageReceiver, 1, "SWAP");
 
         key = mailbox.getKey(thisChain, otherChain, messageSender, messageReceiver, 1, "SWAP");
         assertEq(mailbox.outbox(key), "hello", "The message should match");
@@ -66,7 +72,7 @@ contract MailboxTest is Setup {
         assertEq(hSessionId, 1, "Session ID should match");
         assertEq(keccak256(hLabel), keccak256("SWAP"), "Label should match");
 
-        bytes32 expectedRoot = keccak256(abi.encode(0, key, "hello"));
+        bytes32 expectedRoot = bytes32(0) ^ keccak256(abi.encode(key, "hello"));
         assertEq(
             mailbox.outboxRootPerChain(otherChain),
             expectedRoot,
@@ -76,6 +82,9 @@ contract MailboxTest is Setup {
 
     /// @dev Tests writing a single message to inbox by coordinator
     function testWriteInboxSingle() public returns (bytes32 key) {
+        // the mailbox.allowedUpdater is set in `Setup`; use it as the receiver
+        address updater = mailbox.allowedUpdater();
+        messageReceiver = updater;
         vm.startPrank(COORDINATOR);
 
         vm.expectEmit(true, true, false, true);
@@ -88,7 +97,9 @@ contract MailboxTest is Setup {
         vm.stopPrank();
 
         key = mailbox.getKey(otherChain, thisChain, messageSender, messageReceiver, 1, "SWAP");
-        assertEq(mailbox.inbox(key), "salut", "The message should match");
+        (bytes memory data, bool consumed) = abi.decode(mailbox.inbox(key), (bytes, bool));
+        assertFalse(consumed);
+        assertEq(data, "salut", "The message should match");
         assertTrue(mailbox.createdKeys(key), "Key should be created");
 
         (
@@ -106,7 +117,11 @@ contract MailboxTest is Setup {
         assertEq(hSessionId, 1, "Session ID should match");
         assertEq(keccak256(hLabel), keccak256("SWAP"), "Label should match");
 
-        bytes32 expectedRoot = keccak256(abi.encode(0, key, "salut"));
+        // TODO: Mailbox test has to prank using the bridge address.
+        vm.prank(messageReceiver);
+        mailbox.updateInboxRoot(otherChain, messageSender, 1, "SWAP");
+
+        bytes32 expectedRoot = bytes32(0)^keccak256(abi.encode(key, "salut"));
         assertEq(mailbox.inboxRootPerChain(otherChain), expectedRoot, "Inbox root should match");
     }
 
@@ -125,6 +140,10 @@ contract MailboxTest is Setup {
         mailbox.write(otherChain, messageReceiver, 2, "SWAP", "hello2");
         vm.stopPrank();
 
+        // apply second contribution to outbox root
+        vm.prank(messageSender);
+        mailbox.updateOutboxRoot(otherChain, messageReceiver, 2, "SWAP");
+
         bytes32 key2 = mailbox.getKey(
             thisChain,
             otherChain,
@@ -136,8 +155,8 @@ contract MailboxTest is Setup {
         assertEq(mailbox.outbox(key1), "hello", "First message should remain");
         assertEq(mailbox.outbox(key2), "hello2", "Second message should match");
 
-        bytes32 root1 = keccak256(abi.encode(0, key1, "hello"));
-        bytes32 expectedRoot2 = keccak256(abi.encode(root1, key2, "hello2"));
+        bytes32 root1 = bytes32(0) ^ keccak256(abi.encode( key1, "hello"));
+        bytes32 expectedRoot2 = root1 ^ keccak256(abi.encode(key2, "hello2"));
         assertEq(
             mailbox.outboxRootPerChain(otherChain),
             expectedRoot2,
@@ -160,6 +179,10 @@ contract MailboxTest is Setup {
         mailbox.putInbox(otherChain, messageSender, messageReceiver, 2, "SWAP", "salut2");
         vm.stopPrank();
 
+        // updater must call updateInboxRoot for the second inbox message
+        vm.prank(messageReceiver);
+        mailbox.updateInboxRoot(otherChain, messageSender, 2, "SWAP");
+
         bytes32 key2 = mailbox.getKey(
             otherChain,
             thisChain,
@@ -168,11 +191,15 @@ contract MailboxTest is Setup {
             2,
             "SWAP"
         );
-        assertEq(mailbox.inbox(key1), "salut", "First message should remain");
-        assertEq(mailbox.inbox(key2), "salut2", "Second message should match");
 
-        bytes32 root1 = keccak256(abi.encode(0, key1, "salut"));
-        bytes32 expectedRoot2 = keccak256(abi.encode(root1, key2, "salut2"));
+        (bytes memory data1, bool consumed1) = abi.decode(mailbox.inbox(key1), (bytes, bool));
+        (bytes memory data2, bool consumed2) = abi.decode(mailbox.inbox(key2), (bytes, bool));
+        assertFalse(consumed2);
+        assertEq(data1, "salut", "First message should remain");
+        assertEq(data2, "salut2", "Second message should match");
+
+        bytes32 root1 = bytes32(0) ^ keccak256(abi.encode(key1, "salut"));
+        bytes32 expectedRoot2 = root1 ^ keccak256(abi.encode( key2, "salut2"));
         assertEq(
             mailbox.inboxRootPerChain(otherChain),
             expectedRoot2,
@@ -184,12 +211,12 @@ contract MailboxTest is Setup {
     function testRead() public {
         testWriteInboxSingle();
         vm.prank(messageReceiver);
-        bytes memory data = mailbox.read(
-            otherChain,
-            messageSender,
-            1,
-            "SWAP"
-        );
+        (bytes memory data, bool consumed) = abi.decode(mailbox.read(
+        otherChain,
+        messageSender,
+        1,
+        "SWAP"
+        ), (bytes, bool));
         assertEq(data, "salut", "Should match the read message");
     }
 
@@ -198,12 +225,12 @@ contract MailboxTest is Setup {
         vm.prank(COORDINATOR);
         mailbox.putInbox(otherChain, messageSender, messageReceiver, 1, "SWAP", "");
         vm.prank(messageReceiver);
-        bytes memory data = mailbox.read(
+        (bytes memory data, bool consumed) = abi.decode(mailbox.read(
             otherChain,
             messageSender,
             1,
             "SWAP"
-        );
+        ), (bytes, bool));
         assertEq(data, "", "Should return empty message");
     }
 

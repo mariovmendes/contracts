@@ -28,10 +28,16 @@ interface IMailbox {
         bytes label;
     }
 
+    /// @notice Error when the bridge address has already been set.
+    error AllowedUpdaterAlreadySet();
+
+    /// @notice Error when the updater isn't allowed to execute certain functions
+    error InvalidAllowedUpdater();
+
     /// @notice Error when the caller is not the coordinator.
     error InvalidCoordinator();
 
-    /// @notice Error when trying to read a message that doesn't exist.
+    /// @notice Error when trying to find a message that doesn't exist.
     error MessageNotFound();
 
     /// @notice Error when the ID is invalid (out of range).
@@ -41,6 +47,14 @@ interface IMailbox {
     /// @param index The position in the header list.
     /// @param key The message key.
     event NewInboxKey(uint256 indexed index, bytes32 key);
+
+    /// @notice Emitted when a previously added message is deleted from the inbox.
+    /// @param key The message key.
+    event DeletedInboxMessage(bytes32 key);
+
+    /// @notice Emitted when a previously written message is deleted from the outbox.
+    /// @param key The message key.
+    event DeletedOutboxMessage(bytes32 key);
 
     /// @notice Emitted when a new key is added to the outbox.
     /// @param index The position in the header list.
@@ -60,14 +74,42 @@ interface IMailbox {
         bytes calldata label
     ) external view returns (bytes memory message);
 
+    /// @notice Marks a message from the inbox as consumed.
+    /// @dev This function sets a message to a consumed state to ensure that recv cannot be done twice
+    /// @param chainMessageSender The ID of the chain that sent the message.
+    /// @param sender The address that sent the message.
+    /// @param sessionId The session number.
+    /// @param label The tag for the action.
+    function markConsumed(
+        uint256 chainMessageSender,
+        address sender,
+        uint256 sessionId,
+        bytes calldata label
+    ) external;
+
     /// @notice Function to write a message to the outbox.
-    /// @param chainDest Destination chain ID.
+    /// @param chainDestId Destination chain ID.
     /// @param receiver Receiver's address.
     /// @param sessionId Session identifier.
     /// @param label Operation label.
     /// @param data Message data.
     function write(
-        uint256 chainDest,
+        uint256 chainDestId,
+        address receiver,
+        uint256 sessionId,
+        bytes calldata label,
+        bytes calldata data
+    ) external;
+
+    /// @notice Removes a previously written message from the outbox.
+    /// @dev Any contract can remove from the outbox.
+    /// @param chainDestId The ID of the chain receiving the message.
+    /// @param receiver The address that will receive the message.
+    /// @param sessionId The session number.
+    /// @param label The tag for the action.
+    /// @param data The message data to send.
+    function unwrite(
+        uint256 chainDestId,
         address receiver,
         uint256 sessionId,
         bytes calldata label,
@@ -75,18 +117,65 @@ interface IMailbox {
     ) external;
 
     /// @notice Function to add a message to the inbox (coordinator only).
-    /// @param chainSrc Source chain ID.
+    /// @param chainSenderId Source chain ID.
     /// @param sender Sender's address.
     /// @param receiver Receiver's address.
     /// @param sessionId Session identifier.
     /// @param label Operation label.
     /// @param data Message data.
     function putInbox(
-        uint256 chainSrc,
+        uint256 chainSenderId,
         address sender,
         address receiver,
         uint256 sessionId,
         bytes calldata label,
         bytes calldata data
+    ) external;
+
+    /// @notice Function to remove a message from the inbox (coordinator only).
+    /// @param chainSenderId Source chain ID.
+    /// @param sender Sender's address.
+    /// @param receiver Receiver's address.
+    /// @param sessionId Session identifier.
+    /// @param label Operation label.
+    /// @param data Message data.
+    function removeInbox(
+        uint256 chainSenderId,
+        address sender,
+        address receiver,
+        uint256 sessionId,
+        bytes calldata label,
+        bytes calldata data
+    ) external;
+
+    /**
+    * @notice Update the inbox root for a source chain entry.
+    * @param chainMessageSender Source chain id that originally emitted the message.
+    * @param sender Originating address on the source chain.
+    * @param sessionId Session identifier for the message/flow.
+    * @param label Opaque label/tag distinguishing the message type.
+    */
+    function updateInboxRoot(
+        uint256 chainMessageSender,
+        address sender,
+        uint256 sessionId,
+        bytes calldata label
+    ) external;
+
+    /**
+    * @notice Update the per-destination-chain outbox root for a single outbox entry.
+    * @dev This updates `outboxRootPerChain[chainMessageRecipient]` by XORing it with
+    *      keccak256(abi.encode(key, data)). If the previous root was the zero value,
+    *      the destination chain id is appended to `chainIDsOutbox`.
+    * @param chainMessageRecipient The destination chain ID whose outbox root is being updated.
+    * @param receiver The remote receiver address on `chainMessageRecipient`.
+    * @param sessionId Session identifier associated with the message.
+    * @param label Opaque label/tag that distinguishes the message type.
+    */
+    function updateOutboxRoot(
+        uint256 chainMessageRecipient,
+        address receiver,
+        uint256 sessionId,
+        bytes calldata label
     ) external;
 }

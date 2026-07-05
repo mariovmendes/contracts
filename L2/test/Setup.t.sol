@@ -30,7 +30,7 @@ contract Setup is Test {
         vm.prank(DEPLOYER);
         mailbox = new Mailbox(address(COORDINATOR));
         pingPong = new PingPong(address(mailbox));
-        bridge = new Bridge(address(mailbox));
+        bridge = new Bridge(address(mailbox), address(COORDINATOR));
         myToken = new BridgeableToken(address(bridge));
         stagedMailbox = new StagedMailbox(address(COORDINATOR));
 
@@ -39,5 +39,8 @@ contract Setup is Test {
         vm.label(address(myToken), "MyToken");
         vm.label(address(bridge), "Bridge");
         vm.label(address(stagedMailbox), "StagedMailbox");
+
+        vm.prank(COORDINATOR);
+        mailbox.setAllowedUpdater(address(bridge));
     }
 }

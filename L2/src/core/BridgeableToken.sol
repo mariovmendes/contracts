@@ -35,4 +35,11 @@ contract BridgeableToken is ERC20, IBridgeableToken {
     function mint(address account, uint256 value) public {
         _mint(account, value);
     }
+
+    /// @notice Transfer a specified amount of tokens to an account.
+    /// @param account Address to transfer to.
+    /// @param value Amount to transfer.
+    function transfer(address account, uint256 value) public override(ERC20, IBridgeableToken) returns (bool){
+        return super.transfer(account,value);
+    }
 }
